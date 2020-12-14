@@ -1,4 +1,13 @@
 # BERT For PyTorch
+
+## TODO
+
+- [ ] refactor run_pretraining.py
+  - [ ] reduce args (auto calc gradient accumulation)
+  - [ ] clean up mega training loop
+- [ ] update to use custom logger
+- [ ] look into DALI
+- [ ] clean up data preprocessing / add CORD19 stuff
  
 This repository provides a script and recipe to train the BERT model for PyTorch to achieve state-of-the-art accuracy, and is tested and maintained by NVIDIA.
  
