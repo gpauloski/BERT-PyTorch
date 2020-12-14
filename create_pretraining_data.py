@@ -25,12 +25,11 @@ import h5py
 import numpy as np
 from tqdm import tqdm, trange
 
-from tokenization import BertTokenizer
-import tokenization as tokenization
+from bert.tokenization import BertTokenizer
+import bert.tokenization as tokenization
 
 import random
 import collections
-
 
 
 

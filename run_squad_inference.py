@@ -32,9 +32,9 @@ import torch
 from tqdm import tqdm, trange
 from types import SimpleNamespace
 
-from file_utils import PYTORCH_PRETRAINED_BERT_CACHE
-from modeling import BertForQuestionAnswering, BertConfig, WEIGHTS_NAME, CONFIG_NAME
-from tokenization import (BasicTokenizer, BertTokenizer, whitespace_tokenize)
+from bert.file_utils import PYTORCH_PRETRAINED_BERT_CACHE
+from bert.modeling import BertForQuestionAnswering, BertConfig, WEIGHTS_NAME, CONFIG_NAME
+from bert.tokenization import (BasicTokenizer, BertTokenizer, whitespace_tokenize)
 from run_squad import _get_best_indices, _compute_softmax, get_valid_prelim_predictions, get_answer_text
 
 if sys.version_info[0] == 2:

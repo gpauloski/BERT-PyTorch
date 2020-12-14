@@ -37,15 +37,15 @@ import math
 from apex import amp
 import multiprocessing
 
-from tokenization import BertTokenizer
-import modeling
+from bert.tokenization import BertTokenizer
+import bert.modeling
 from apex.optimizers import FusedLAMB
-from schedulers import PolyWarmUpScheduler
+from bert.schedulers import PolyWarmUpScheduler
 
-from file_utils import PYTORCH_PRETRAINED_BERT_CACHE
-from utils import is_main_process, format_step, get_world_size, get_rank
+from bert.file_utils import PYTORCH_PRETRAINED_BERT_CACHE
+from bert.utils import is_main_process, format_step, get_world_size, get_rank
 from apex.parallel import DistributedDataParallel as DDP
-from schedulers import LinearWarmUpScheduler
+from bert.schedulers import LinearWarmUpScheduler
 from apex.parallel.distributed import flat_dist_call
 import amp_C
 import apex_C

@@ -34,16 +34,16 @@ from torch.utils.data import (DataLoader, RandomSampler, SequentialSampler,
 from torch.utils.data.distributed import DistributedSampler
 from tqdm import tqdm, trange
 
-from file_utils import PYTORCH_PRETRAINED_BERT_CACHE
-import modeling
-from tokenization import BertTokenizer
-from optimization import BertAdam, warmup_linear
-from schedulers import LinearWarmUpScheduler
+from bert.file_utils import PYTORCH_PRETRAINED_BERT_CACHE
+import bert.modeling
+from bert.tokenization import BertTokenizer
+from bert.optimization import BertAdam, warmup_linear
+from bert.schedulers import LinearWarmUpScheduler
 from apex import amp
 from sklearn.metrics import matthews_corrcoef, f1_score
-from utils import (is_main_process, mkdir_by_main_process, format_step,
+from bert.utils import (is_main_process, mkdir_by_main_process, format_step,
                    get_world_size)
-from processors.glue import PROCESSORS, convert_examples_to_features
+from bert.processors.glue import PROCESSORS, convert_examples_to_features
 
 torch._C._jit_set_profiling_mode(False)
 torch._C._jit_set_profiling_executor(False)

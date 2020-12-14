@@ -30,10 +30,10 @@ from torch.utils.data import (DataLoader, RandomSampler, SequentialSampler,
 from torch.utils.data.distributed import DistributedSampler
 from tqdm import tqdm, trange
 
-from file_utils import PYTORCH_PRETRAINED_BERT_CACHE
-from modeling import BertForMultipleChoice, BertConfig, WEIGHTS_NAME, CONFIG_NAME
-from optimization import BertAdam, warmup_linear
-from tokenization import BertTokenizer
+from bert.file_utils import PYTORCH_PRETRAINED_BERT_CACHE
+from bert.modeling import BertForMultipleChoice, BertConfig, WEIGHTS_NAME, CONFIG_NAME
+from bert.optimization import BertAdam, warmup_linear
+from bert.tokenization import BertTokenizer
 
 torch._C._jit_set_profiling_mode(False)
 torch._C._jit_set_profiling_executor(False)

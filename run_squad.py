@@ -35,12 +35,12 @@ from torch.utils.data.distributed import DistributedSampler
 from tqdm import tqdm, trange
 
 from apex import amp
-from schedulers import LinearWarmUpScheduler
-from file_utils import PYTORCH_PRETRAINED_BERT_CACHE
-import modeling
-from optimization import BertAdam, warmup_linear
-from tokenization import (BasicTokenizer, BertTokenizer, whitespace_tokenize)
-from utils import is_main_process, format_step
+from bert.schedulers import LinearWarmUpScheduler
+from bert.file_utils import PYTORCH_PRETRAINED_BERT_CACHE
+import bert.modeling
+from bert.optimization import BertAdam, warmup_linear
+from bert.tokenization import (BasicTokenizer, BertTokenizer, whitespace_tokenize)
+from bert.utils import is_main_process, format_step
 import dllogger, time
 
 torch._C._jit_set_profiling_mode(False)
