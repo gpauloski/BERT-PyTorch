@@ -28,21 +28,20 @@ import os
 import torch
 import math
 import multiprocessing
+import signal
 import numpy as np
+import loggerplus as logger
 
 from apex.optimizers import FusedLAMB
-from torch.utils.data import DataLoader, RandomSampler, SequentialSampler, Dataset
+from torch.utils.data import DataLoader, RandomSampler, Dataset
 from torch.utils.data.distributed import DistributedSampler
 from torch.nn.parallel import DistributedDataParallel as DDP
-from tqdm import tqdm, trange
+from tqdm import tqdm
 
 import bert.modeling as modeling
-from bert.tokenization import BertTokenizer
 from bert.schedulers import PolyWarmUpScheduler
-from bert.file_utils import PYTORCH_PRETRAINED_BERT_CACHE
 from bert.utils import is_main_process, get_world_size, get_rank, WorkerInitObj
 
-import loggerplus as logger
 from concurrent.futures import ProcessPoolExecutor
 
 try:
@@ -54,7 +53,6 @@ except:
 # Track whether a SIGTERM (cluster time up) has been handled
 timeout_sent = False
 
-import signal
 # handle SIGTERM sent from the scheduler and mark so we
 # can gracefully save & exit
 def signal_handler(sig, frame):
@@ -291,7 +289,9 @@ def prepare_optimizers(args, model, checkpoint, global_step)
                 checkpoint['optimizer']['param_groups'][iter]['lr'] = args.learning_rate
         optimizer.load_state_dict(checkpoint['optimizer'])
 
-    scaler = torch.cuda.amp.GradScaler() if args.fp16 else None
+    scaler = None
+    if args.fp16:
+        scaler = GradScaler()
 
     return optimizer, lr_scheduler, scaler
 
