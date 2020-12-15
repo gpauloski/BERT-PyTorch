@@ -16,6 +16,13 @@ import torch.distributed as dist
 
 from pathlib import Path
 
+#Workaround because python functions are not picklable
+class WorkerInitObj(object):
+    def __init__(self, seed):
+        self.seed = seed
+    def __call__(self, id):
+        np.random.seed(seed=self.seed + id)
+        random.seed(self.seed + id)
 
 def get_rank():
     if not dist.is_available():

@@ -1,16 +1,16 @@
-# progress bars in model download and training scripts
+# Progress bars and logging
 tqdm
+git+https://github.com/gpauloski/loggerplus
 # Accessing files from S3 directly.
 boto3
 # Used for downloading models over HTTP
 requests
 six
 ipdb
-#Data processing
+# Data processing
 h5py
 html2text
 nltk
 progressbar
-#Others
+# Others
 onnxruntime
-git+https://github.com/NVIDIA/dllogger

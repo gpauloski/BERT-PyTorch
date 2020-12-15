@@ -20,44 +20,38 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
-# ==================
-import csv
-import os
 import time
 import argparse
 import random
 import h5py
-from tqdm import tqdm, trange
 import os
-import numpy as np
 import torch
-from torch.utils.data import DataLoader, RandomSampler, SequentialSampler, Dataset
-from torch.utils.data.distributed import DistributedSampler
 import math
-from apex import amp
 import multiprocessing
+import numpy as np
 
-from bert.tokenization import BertTokenizer
-import bert.modeling
 from apex.optimizers import FusedLAMB
-from bert.schedulers import PolyWarmUpScheduler
+from torch.utils.data import (DataLoader, RandomSampler, SequentialSampler,
+                              Dataset)
+from torch.utils.data.distributed import DistributedSampler
+from torch.nn.parallel import DistributedDataParallel as DDP
+from tqdm import tqdm, trange
 
+import bert.modeling as modeling
+from bert.tokenization import BertTokenizer
+from bert.schedulers import PolyWarmUpScheduler, LinearWarmUpScheduler
 from bert.file_utils import PYTORCH_PRETRAINED_BERT_CACHE
-from bert.utils import is_main_process, format_step, get_world_size, get_rank
-from apex.parallel import DistributedDataParallel as DDP
-from bert.schedulers import LinearWarmUpScheduler
-from apex.parallel.distributed import flat_dist_call
-import amp_C
-import apex_C
-from apex.amp import _amp_state
+from bert.utils import (is_main_process, format_step, get_world_size, get_rank,
+                        WorkerInitObj
 
-import dllogger
+import loggerplus as logger
 from concurrent.futures import ProcessPoolExecutor
 
-torch._C._jit_set_profiling_mode(False)
-torch._C._jit_set_profiling_executor(False)
-
-skipped_steps = 0
+try:
+    from torch.cuda.amp import autocast, GradScaler
+    TORCH_FP16 = True
+except:
+    TORCH_FP16 = False
 
 # Track whether a SIGTERM (cluster time up) has been handled
 timeout_sent = False
@@ -71,13 +65,6 @@ def signal_handler(sig, frame):
 
 signal.signal(signal.SIGTERM, signal_handler)
 
-#Workaround because python functions are not picklable
-class WorkerInitObj(object):
-    def __init__(self, seed):
-        self.seed = seed
-    def __call__(self, id):
-        np.random.seed(seed=self.seed + id)
-        random.seed(self.seed + id)
 
 def create_pretraining_dataset(input_file, max_pred_length, shared_list, args, worker_init):
     train_data = pretraining_dataset(input_file=input_file, max_pred_length=max_pred_length)
@@ -87,6 +74,7 @@ def create_pretraining_dataset(input_file, max_pred_length, shared_list, args, w
                                   num_workers=4, worker_init_fn=worker_init,
                                   pin_memory=True)
     return train_dataloader, input_file
+
 
 class pretraining_dataset(Dataset):
 
@@ -112,13 +100,14 @@ class pretraining_dataset(Dataset):
         masked_lm_labels = torch.ones(input_ids.shape, dtype=torch.long) * -1
         index = self.max_pred_length
         # store number of  masked tokens in index
-        padded_mask_indices = (masked_lm_positions == 0).nonzero()
+        padded_mask_indices = torch.nonzero(masked_lm_positions == 0, as_tuple=False)
         if len(padded_mask_indices) != 0:
             index = padded_mask_indices[0].item()
         masked_lm_labels[masked_lm_positions[:index]] = masked_lm_ids[:index]
 
         return [input_ids, segment_ids, input_mask,
                 masked_lm_labels, next_sentence_labels]
+
 
 class BertPretrainingCriterion(torch.nn.Module):
     def __init__(self, vocab_size):
@@ -133,7 +122,6 @@ class BertPretrainingCriterion(torch.nn.Module):
 
 
 def parse_arguments():
-
     parser = argparse.ArgumentParser()
 
     ## Required parameters
@@ -196,10 +184,6 @@ def parse_arguments():
                         type=float,
                         help="Proportion of training to perform linear learning rate warmup for. "
                              "E.g., 0.1 = 10%% of training.")
-    parser.add_argument("--local_rank",
-                        type=int,
-                        default=os.getenv('LOCAL_RANK', -1),
-                        help="local_rank for distributed training on gpus")
     parser.add_argument('--seed',
                         type=int,
                         default=42,
@@ -211,14 +195,7 @@ def parse_arguments():
     parser.add_argument('--fp16',
                         default=False,
                         action='store_true',
-                        help="Mixed precision training")
-    parser.add_argument('--amp',
-                        default=False,
-                        action='store_true',
-                        help="Mixed precision training")
-    parser.add_argument('--loss_scale',
-                        type=float, default=0.0,
-                        help='Loss scaling, positive power of 2 values can improve fp16 convergence.')
+                        help="Use PyTorch AMP training")
     parser.add_argument('--log_freq',
                         type=float, default=1.0,
                         help='frequency of logging loss.')
@@ -246,100 +223,63 @@ def parse_arguments():
                         default=False,
                         action='store_true',
                         help="Whether to train with seq len 512")
-    parser.add_argument('--allreduce_post_accumulation',
-                        default=False,
-                        action='store_true',
-                        help="Whether to do allreduces during gradient accumulation steps.")
-    parser.add_argument('--allreduce_post_accumulation_fp16',
-                        default=False,
-                        action='store_true',
-                        help="Whether to do fp16 allreduce post accumulation.")
     parser.add_argument('--phase1_end_step',
                         type=int,
                         default=7038,
                         help="Number of training steps in Phase1 - seq len 128")
-    parser.add_argument('--init_loss_scale',
-                        type=int,
-                        default=2**20,
-                        help="Initial loss scaler value")
-    parser.add_argument("--do_train",
-                        default=False,
-                        action='store_true',
-                        help="Whether to run training.")
-    parser.add_argument('--json-summary', type=str, default="results/dllogger.json",
-                        help='If provided, the json summary will be written to'
-                             'the specified file.')
-    parser.add_argument("--use_env",
-                        action='store_true',
-                        help="Whether to read local rank from ENVVAR")
     parser.add_argument('--disable_progress_bar',
                         default=False,
                         action='store_true',
                         help='Disable tqdm progress bar')
-    parser.add_argument('--steps_this_run', type=int, default=-1,
-                        help='If provided, only run this many steps before exiting')
-
+    parser.add_argument('--local_rank', type=int, default=0,
+                        help='local rank for distributed training')
     args = parser.parse_args()
-    args.fp16 = args.fp16 or args.amp
-
-    if args.steps_this_run < 0:
-        args.steps_this_run = args.max_steps
-    
+ 
     return args
 
-def setup_training(args):
 
+def setup_training(args):
     assert (torch.cuda.is_available())
 
-    if args.local_rank == -1:
-        device = torch.device("cuda")
-        args.n_gpu = torch.cuda.device_count()
-        args.allreduce_post_accumulation = False
-        args.allreduce_post_accumulation_fp16 = False
-    else:
-        torch.cuda.set_device(args.local_rank)
-        device = torch.device("cuda", args.local_rank)
-        # Initializes the distributed backend which will take care of sychronizing nodes/GPUs
-        torch.distributed.init_process_group(backend='nccl', init_method='env://')
-        args.n_gpu = 1
-        
-    if args.gradient_accumulation_steps == 1:
-        args.allreduce_post_accumulation = False
-        args.allreduce_post_accumulation_fp16 = False
-        
+    torch.cuda.set_device(args.local_rank)
+    args.device = torch.device("cuda", args.local_rank)
+    torch.distributed.init_process_group(backend='nccl', init_method='env://')
+
     if is_main_process():
-        dllogger.init(backends=[dllogger.JSONStreamBackend(verbosity=dllogger.Verbosity.VERBOSE,
-                                                           filename=args.json_summary),
-                                dllogger.StdOutBackend(verbosity=dllogger.Verbosity.VERBOSE, step_format=format_step)])
-    else:
-        dllogger.init(backends=[])
-
-    print("device: {} n_gpu: {}, distributed training: {}, 16-bits training: {}".format(
-        device, args.n_gpu, bool(args.local_rank != -1), args.fp16))
-
-    if args.gradient_accumulation_steps < 1:
-        raise ValueError("Invalid gradient_accumulation_steps parameter: {}, should be >= 1".format(
-            args.gradient_accumulation_steps))
-    if args.train_batch_size % args.gradient_accumulation_steps != 0:
-        raise ValueError("Invalid gradient_accumulation_steps parameter: {}, batch size {} should be divisible".format(
-            args.gradient_accumulation_steps, args.train_batch_size))
-
-    args.train_batch_size = args.train_batch_size // args.gradient_accumulation_steps
-
-    if not args.do_train:
-        raise ValueError(" `do_train`  must be True.")
-
-    if not args.resume_from_checkpoint and os.path.exists(args.output_dir) and (
-            os.listdir(args.output_dir) and any([i.startswith('ckpt') for i in os.listdir(args.output_dir)])):
-        raise ValueError("Output directory ({}) already exists and is not empty.".format(args.output_dir))
-
-    if (not args.resume_from_checkpoint or not os.path.exists(args.output_dir)) and is_main_process():
         os.makedirs(args.output_dir, exist_ok=True)
+ 
+    logger.init(
+        handlers=[
+            logger.StreamHandler(verbose=is_main_process()),
+            logger.FileHandler(os.path.join(args.output_dir, 'log.txt'), 
+                               overwrite=False, verbose=is_main_process()),
+            logger.TorchTensorboardHandler(args.output_dir, 
+                                           verbose=is_main_process()),
+            #logger.CSVHandler(os.path.join(args.output_dir, 'metrics.csv'),
+            #                   overwrite=False),
+        ]
+    )
 
-    return device, args
+    if not TORCH_FP16 and args.fp16:
+        raise ValueError('FP16 training enabled but unable to import torch.cuda.amp.'
+                         'Is the torch version >= 1.6?')
+
+    if args.global_batch_size % get_world_size() != 0:
+        raise ValueError('global_batch_size={} should be divisible by '
+                         'world_size={}'.format(
+                         args.global_batch_size, get_world_size()))
+    args.train_batch_size = args.global_batch_size // get_world_size()
+
+    if args.global_batch_size % get_world_size() != 0:
+        raise ValueError('global_batch_size//world_size={} should be divisible '
+                         'by local_batch_size={}'.format(
+                         args.train_batch_size, get_world_size()))
+    args.accumulation_steps = args.train_batch_size // args.local_batch_size
+
+    return args
+
 
 def prepare_model_and_optimizer(args, device):
-
     # Prepare model
     config = modeling.BertConfig.from_json_file(args.config_file)
 
@@ -370,9 +310,9 @@ def prepare_model_and_optimizer(args, device):
         if args.phase2 and not args.init_checkpoint:
             global_step -= args.phase1_end_step
         if is_main_process():
-            print("resume step from ", args.resume_step)
+            logger.info('Resume from step {}'.format(args.resume_step))
 
-    model.to(device)
+    model.to(args.device)
     param_optimizer = list(model.named_parameters())
     no_decay = ['bias', 'gamma', 'beta', 'LayerNorm']
     
@@ -385,13 +325,8 @@ def prepare_model_and_optimizer(args, device):
     lr_scheduler = PolyWarmUpScheduler(optimizer, 
                                        warmup=args.warmup_proportion, 
                                        total_steps=args.max_steps)
-    if args.fp16:
-
-        if args.loss_scale == 0:
-            model, optimizer = amp.initialize(model, optimizer, opt_level="O2", loss_scale="dynamic", cast_model_outputs=torch.float16)
-        else:
-            model, optimizer = amp.initialize(model, optimizer, opt_level="O2", loss_scale=args.loss_scale, cast_model_outputs=torch.float16)
-        amp._amp_state.loss_scalers[0]._loss_scale = args.init_loss_scale
+    
+    scaler = torch.cuda.amp.GradScaler() if args.fp16 else None
 
     model.checkpoint_activations(args.checkpoint_activations)
 
@@ -408,85 +343,24 @@ def prepare_model_and_optimizer(args, device):
                 checkpoint['optimizer']['param_groups'][iter]['lr'] = args.learning_rate
         optimizer.load_state_dict(checkpoint['optimizer'])  # , strict=False)
 
-        # Restore AMP master parameters          
-        if args.fp16:
-            optimizer._lazy_init_maybe_master_weights()
-            optimizer._amp_stash.lazy_init_called = True
-            optimizer.load_state_dict(checkpoint['optimizer'])
-            for param, saved_param in zip(amp.master_params(optimizer), checkpoint['master params']):
-                param.data.copy_(saved_param.data)
-
-    if args.local_rank != -1:
-        if not args.allreduce_post_accumulation:
-            model = DDP(model, message_size=250000000, gradient_predivide_factor=get_world_size())
-        else:
-            flat_dist_call([param.data for param in model.parameters()], torch.distributed.broadcast, (0,) )
-    elif args.n_gpu > 1:
-        model = torch.nn.DataParallel(model)
+    if get_world_size() > 1:
+        model = DDP(model, device_ids=[args.local_rank])
 
     criterion = BertPretrainingCriterion(config.vocab_size)
 
-    return model, optimizer, lr_scheduler, checkpoint, global_step, criterion
+    return model, optimizer, lr_scheduler, checkpoint, global_step, criterion, scaler
 
-def take_optimizer_step(args, optimizer, model, overflow_buf, global_step):
 
-    global skipped_steps
-    if args.allreduce_post_accumulation:
-        # manually allreduce gradients after all accumulation steps
-        # check for Inf/NaN
-        # 1. allocate an uninitialized buffer for flattened gradient
-        loss_scale = _amp_state.loss_scalers[0].loss_scale() if args.fp16 else 1
-        master_grads = [p.grad for p in amp.master_params(optimizer) if p.grad is not None]
-        flat_grad_size = sum(p.numel() for p in master_grads)
-        allreduce_dtype = torch.float16 if args.allreduce_post_accumulation_fp16 else torch.float32
-        flat_raw = torch.empty(flat_grad_size, device='cuda', dtype=allreduce_dtype)
-        # 2. combine unflattening and predivision of unscaled 'raw' gradient
-        allreduced_views = apex_C.unflatten(flat_raw, master_grads)
-        overflow_buf.zero_()
-        amp_C.multi_tensor_scale(65536,
-            overflow_buf,
-            [master_grads, allreduced_views],
-            loss_scale / (get_world_size() * args.gradient_accumulation_steps))
-        # 3. sum gradient across ranks. Because of the predivision, this averages the gradient
-        torch.distributed.all_reduce(flat_raw)
-        # 4. combine unscaling and unflattening of allreduced gradient
-        overflow_buf.zero_()
-        amp_C.multi_tensor_scale(65536,
-            overflow_buf,
-            [allreduced_views, master_grads],
-            1./loss_scale)
-        # 5. update loss scale
-        if args.fp16:
-            scaler = _amp_state.loss_scalers[0]
-            old_overflow_buf = scaler._overflow_buf
-            scaler._overflow_buf = overflow_buf
-            had_overflow = scaler.update_scale()
-            scaler._overfloat_buf = old_overflow_buf
-        else:
-            had_overflow = 0
-        # 6. call optimizer step function
-        if had_overflow == 0:
-            optimizer.step()
-            global_step += 1
-        else:
-            # Overflow detected, print message and clear gradients
-            skipped_steps += 1
-            if is_main_process():
-                scaler = _amp_state.loss_scalers[0]
-                dllogger.log(step="PARAMETER", data={"loss_scale": scaler.loss_scale()})
-            if _amp_state.opt_properties.master_weights:
-                for param in optimizer._amp_stash.all_fp32_from_fp16_params:
-                    param.grad = None
-        for param in model.parameters():
-            param.grad = None
+def take_optimizer_step(optimizer, model, scaler):
+    if scaler is not None:
+        scaler.step(optimizer)
+        scaler.update()
     else:
         optimizer.step()
-        #optimizer.zero_grad()
-        for param in model.parameters():
-            param.grad = None
-        global_step += 1
 
-    return global_step
+    for param in model.parameters():
+        param.grad = None
+
 
 def main():
     global timeout_sent
@@ -499,21 +373,14 @@ def main():
     torch.cuda.manual_seed(args.seed + args.local_rank)
     worker_init = WorkerInitObj(args.seed + args.local_rank)
 
-    device, args = setup_training(args)
-    dllogger.log(step="PARAMETER", data={"Config": [str(args)]})
+    args = setup_training(args)
+    logger.info(args)
 
     # Prepare optimizer
-    model, optimizer, lr_scheduler, checkpoint, global_step, criterion = prepare_model_and_optimizer(args, device)
-
-    if is_main_process():
-        dllogger.log(step="PARAMETER", data={"SEED": args.seed})
+    model, optimizer, lr_scheduler, checkpoint, global_step, criterion, scaler = prepare_model_and_optimizer(args)
 
     raw_train_start = None
     if args.do_train:
-        if is_main_process():
-            dllogger.log(step="PARAMETER", data={"train_start": True})
-            dllogger.log(step="PARAMETER", data={"batch_size_per_gpu": args.train_batch_size})
-            dllogger.log(step="PARAMETER", data={"learning_rate": args.learning_rate})
 
         model.train()
         most_recent_ckpts_paths = []
@@ -610,7 +477,8 @@ def main():
 
                     if training_steps % args.gradient_accumulation_steps == 0:
                         lr_scheduler.step()  # learning rate warmup
-                        global_step = take_optimizer_step(args, optimizer, model, overflow_buf, global_step)
+                        take_optimizer_step(args, optimizer, model, overflow_buf, global_step)
+                        global_step += 1
 
                     if global_step >= args.steps_this_run or timeout_sent:
                         train_time_raw = time.time() - raw_train_start
@@ -623,20 +491,20 @@ def main():
                             torch.distributed.all_reduce(average_loss)
                         final_loss = average_loss.item()
                         if is_main_process():
-                            dllogger.log(step=(epoch, global_step, ), data={"final_loss": final_loss})
+                            logger.info('final_loss: {}'.format(final_loss))
                     elif training_steps % (args.log_freq * args.gradient_accumulation_steps) == 0:
                         if is_main_process():
-                            dllogger.log(step=(epoch, global_step, ), data={"average_loss": average_loss / (args.log_freq * divisor),
-                                                                            "step_loss": loss.item() * args.gradient_accumulation_steps / divisor,
-                                                                            "learning_rate": optimizer.param_groups[0]['lr']})
+                            logger.log(tag='train', step=global_step, 
+                                         average_loss=average_loss / (args.log_freq * divisor),
+                                         step_loss=loss.item() * args.gradient_accumulation_steps / divisor,
+                                         learning_rate=optimizer.param_groups[0]['lr'])
                         average_loss = 0
-
 
                     if global_step >= args.steps_this_run or training_steps % (
                             args.num_steps_per_checkpoint * args.gradient_accumulation_steps) == 0 or timeout_sent:
                         if is_main_process() and not args.skip_checkpoint:
                             # Save a trained model
-                            dllogger.log(step="PARAMETER", data={"checkpoint_step": global_step})
+                            logger.info('Saving checkpoint: global_step={}'.format(global_step))
                             model_to_save = model.module if hasattr(model,
                                                                     'module') else model  # Only save the model it-self
                             if args.resume_step < 0 or not args.phase2:
@@ -673,19 +541,20 @@ def main():
 
 
 if __name__ == "__main__":
-
     now = time.time()
     args, final_loss, train_time_raw, global_step = main()
     gpu_count = args.n_gpu
     global_step += args.phase1_end_step if (args.phase2 and args.resume_step > 0) else 0
     if args.resume_step == -1:
         args.resume_step = 0
+
     if torch.distributed.is_initialized():
         gpu_count = get_world_size()
+
     if is_main_process():
         e2e_time = time.time() - now
         training_perf = args.train_batch_size * args.gradient_accumulation_steps * gpu_count\
                         * (global_step - args.resume_step + skipped_steps) / train_time_raw
-        dllogger.log(step=tuple(), data={"e2e_train_time": e2e_time, "training_sequences_per_second": training_perf,
-                                         "final_loss": final_loss, "raw_train_time": train_time_raw })
-    dllogger.flush()
+        logger.info(str({"e2e_train_time": e2e_time, "training_sequences_per_second": training_perf,
+                        "final_loss": final_loss, "raw_train_time": train_time_raw }))
+
