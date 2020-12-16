@@ -9,5 +9,5 @@
 	"global_batch_size": 32768,
 	"local_batch_size": 4,
 	"max_steps": 1563,
-	"previous_phase_end_step": 7138,
+	"previous_phase_end_step": 7138
 }

@@ -20,17 +20,18 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
-import time
 import argparse
-import random
 import h5py
-import os
-import torch
+import json
+import loggerplus as logger
 import math
 import multiprocessing
-import signal
 import numpy as np
-import loggerplus as logger
+import os
+import random
+import signal
+import time
+import torch
 
 from apex.optimizers import FusedLAMB
 from torch.utils.data import DataLoader, RandomSampler, Dataset
@@ -128,7 +129,7 @@ def parse_arguments():
                         help="The input data dir containing .hdf5 files for the task.")
     parser.add_argument("--output_dir", default=None, type=str,
                         help="The output dir for checkpoints and logging.")
-    parser.add_argument("--model_config_file", default=None, type=str, required=True,
+    parser.add_argument("--model_config_file", default=None, type=str,
                         help="The BERT model config")
 
     ## Training Configuration
@@ -172,8 +173,8 @@ def parse_arguments():
         with open(args.config_file) as jf:
             configs = json.load(jf)
         for key in configs:
-            if key in args.keys():
-                setattr(args, key, config[key])
+            if key in vars(args):
+                setattr(args, key, configs[key])
 
     return args
 
@@ -200,6 +201,8 @@ def setup_training(args):
         ]
     )
 
+    logger.info('Torch distributed initialized (world_size={})'.format(get_world_size()))
+
     if not TORCH_FP16 and args.fp16:
         raise ValueError('FP16 training enabled but unable to import torch.cuda.amp.'
                          'Is the torch version >= 1.6?')
@@ -214,7 +217,7 @@ def setup_training(args):
         raise ValueError('local_accumulated_batch_size={} should be divisible '
                          'by local_batch_size={}. local_accumulated_batch_size '
                          'is global_batch_size // world_size.'.format(
-                         args.train_batch_size, get_world_size()))
+                         local_accumulated_batch_size, get_world_size()))
     args.accumulation_steps = local_accumulated_batch_size // args.local_batch_size
 
     return args
@@ -232,6 +235,7 @@ def prepare_model(args):
 
     checkpoint = None
     global_step = 0
+    args.resume_step = 0
     checkpoint_names = [f for f in os.listdir(args.output_dir) if f.endswith(".pt")]
     if len(checkpoint_names) > 0:
         args.resume_step = max([int(x.split('.pt')[0].split('_')[1].strip())
@@ -244,9 +248,13 @@ def prepare_model(args):
 
         model.load_state_dict(checkpoint['model'], strict=False)
 
-        logger.info('Resume from step {} checkpoint'.format(args.resume_step))
-
+        if args.previous_phase_end_step > args.resume_step:
+            raise ValueError('previous_phase_end_step={} cannot be larger '
+                             'than resume_step={}'.format(
+                             args.previous_phase_end_step, args.resume_step))
         global_step = args.resume_step - args.previous_phase_end_step
+        
+        logger.info('Resume from step {} checkpoint'.format(args.resume_step))
 
     model.to(args.device)
     model.checkpoint_activations(args.checkpoint_activations)
@@ -256,10 +264,10 @@ def prepare_model(args):
 
     criterion = BertPretrainingCriterion(config.vocab_size)
 
-    return model, checkpoint, global_step, criterion
+    return model, checkpoint, global_step, criterion, args
 
 
-def prepare_optimizers(args, model, checkpoint, global_step)
+def prepare_optimizers(args, model, checkpoint, global_step):
     param_optimizer = list(model.named_parameters())
     no_decay = ['bias', 'gamma', 'beta', 'LayerNorm']
 
@@ -272,12 +280,13 @@ def prepare_optimizers(args, model, checkpoint, global_step)
 
     optimizer = FusedLAMB(optimizer_grouped_parameters,
                           lr=args.learning_rate)
+    #torch.optim.SGD(optimizer_grouped_parameters, lr=args.learning_rate)
     lr_scheduler = PolyWarmUpScheduler(optimizer,
                                        warmup=args.warmup_proportion,
                                        total_steps=args.max_steps)
 
     if checkpoint is not None:
-        if global_step >= args.previous_phase_end_step:
+        if args.resume_step >= args.previous_phase_end_step:
             keys = list(checkpoint['optimizer']['state'].keys())
             # Override hyperparameters from previous checkpoint
             for key in keys:
@@ -307,7 +316,7 @@ def take_optimizer_step(optimizer, model, scaler):
         param.grad = None
 
 
-def forward_backward_pass(model, optimizer, scaler, batch, divisor)
+def forward_backward_pass(model, criterion, scaler, batch, divisor):
     input_ids, segment_ids, input_mask, masked_lm_labels, next_sentence_labels = batch
 
     if scaler is not None:
@@ -346,7 +355,7 @@ def forward_backward_pass(model, optimizer, scaler, batch, divisor)
 def main(args):
     global timeout_sent
 
-    model, checkpoint, global_step, criterion = prepare_model(args)
+    model, checkpoint, global_step, criterion, args = prepare_model(args)
     optimizer, lr_scheduler, scaler = prepare_optimizers(
             args, model, checkpoint, global_step)
 
@@ -355,6 +364,7 @@ def main(args):
     average_loss = 0.0
     epoch = 0
     training_steps = 0
+    train_time_start = None
 
     worker_init = WorkerInitObj(args.seed + args.local_rank)
     pool = ProcessPoolExecutor(1)
@@ -391,7 +401,7 @@ def main(args):
             train_data = pretraining_dataset(data_file, args.max_predictions_per_seq)
             train_sampler = RandomSampler(train_data)
             train_dataloader = DataLoader(train_data, sampler=train_sampler,
-                                          batch_size=args.train_batch_size,
+                                          batch_size=args.local_batch_size,
                                           num_workers=4, worker_init_fn=worker_init,
                                           pin_memory=True)
         else:
@@ -414,30 +424,32 @@ def main(args):
             train_iter = tqdm(train_dataloader, desc="Iteration",
                     disable=not (not args.disable_progress_bar and is_main_process()))
 
+            if train_time_start is None:
+                train_time_start = time.time()
+
             for batch in train_iter:
                 training_steps += 1
 
                 batch = [t.to(args.device) for t in batch]
-                loss = forward_backward_pass(model, optimizer, scaler, batch,
+                loss = forward_backward_pass(model, criterion, scaler, batch,
                                              args.accumulation_steps)
                 average_loss += loss.item()
 
                 if training_steps % args.accumulation_steps == 0:
                     lr_scheduler.step()
-                    take_optimizer_step(args, optimizer, model, overflow_buf, global_step)
+                    take_optimizer_step(optimizer, model, scaler)
                     global_step += 1
 
-                if global_step >= args.max_step:
-                    last_num_steps = int(training_steps / args.accumulation_steps)
-                    average_loss = torch.tensor(average_loss, dtype=torch.float32).cuda()
-                    average_loss = average_loss / last_num_steps
-                    average_loss /= get_world_size()
-                    torch.distributed.all_reduce(average_loss)
-                    final_loss = average_loss.item()
-                    logger.info('final_loss: {}'.format(final_loss))
-                elif training_steps % args.accumulation_steps == 0:
+                #if global_step >= args.max_steps:
+                #    average_loss = torch.tensor(average_loss, dtype=torch.float32).cuda()
+                #    average_loss = average_loss * 
+                #    average_loss /= get_world_size()
+                #    torch.distributed.all_reduce(average_loss)
+                #    final_loss = average_loss.item()
+                #    logger.info('final_loss: {}'.format(final_loss))
+                if training_steps % args.accumulation_steps == 0:
                     logger.log(tag='train',
-                               step=global_step,
+                               step=global_step+args.previous_phase_end_step,
                                epoch=epoch,
                                average_loss=average_loss,
                                step_loss=loss.item() * args.accumulation_steps,
@@ -449,7 +461,8 @@ def main(args):
                         timeout_sent):
                     if is_main_process() and not args.skip_checkpoint:
                         # Save a trained model
-                        logger.info('Saving checkpoint: global_step={}'.format(global_step))
+                        logger.info('Saving checkpoint: global_step={}'.format(
+                                global_step + args.previous_phase_end_step))
                         model_to_save = model.module if hasattr(model, 'module') else model
                         output_save_file = os.path.join(args.output_dir,
                                 "ckpt_{}.pt".format(global_step + args.previous_phase_end_step))
@@ -469,11 +482,11 @@ def main(args):
                             ckpt_to_be_removed = most_recent_ckpts_paths.pop(0)
                             os.remove(ckpt_to_be_removed)
 
-                    # Exiting the training due to hitting max steps, or being sent a
-                    # timeout from the cluster scheduler
-                    if global_step >= args.max_steps or timeout_sent:
-                        del train_dataloader
-                        return final_loss, global_step
+                # Exiting the training due to hitting max steps, or being sent a
+                # timeout from the cluster scheduler
+                if global_step >= args.max_steps or timeout_sent:
+                    del train_dataloader
+                    return global_step, time.time() - train_time_start
 
             del train_dataloader
             train_dataloader, data_file = dataset_future.result(timeout=None)
@@ -493,12 +506,10 @@ if __name__ == "__main__":
     logger.info(args)
 
     start_time = time.time()
-    final_loss, global_step = main(args)
-    end_time = time.time() - start_time
+    global_step, train_time = main(args)
+    runtime = time.time() - start_time
 
-    logger.info(str({
-        "e2e_train_time": e2e_time,
-        "training_sequences_per_second": (args.global_batch_size *
-                     (global_step - args.resume_step) / train_time_raw)
-        "final_loss": final_loss,}
-    )
+    logger.info("runtime: {}  train_time={}  training_seq_per_sec: {}".format(
+            runtime, train_time,
+            args.global_batch_size * (global_step - args.resume_step) / train_time))
+

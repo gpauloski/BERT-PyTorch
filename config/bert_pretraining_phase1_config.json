@@ -7,6 +7,6 @@
 	"learning_rate": 6e-3,
 	"warmup_proportion": 0.2843,
 	"global_batch_size": 65536,
-	"local_batch_size": 8,
-	"max_steps": 7138,
+	"local_batch_size": 16,
+	"max_steps": 7138
 }
