@@ -2,10 +2,10 @@
 
 ## TODO
 
-- [ ] refactor run_pretraining.py
-  - [ ] reduce args (auto calc gradient accumulation)
-  - [ ] clean up mega training loop
-- [ ] update to use custom logger
+- [x] refactor run_pretraining.py
+  - [x] reduce args (auto calc gradient accumulation)
+  - [x] clean up mega training loop
+- [x] update to use custom logger
 - [ ] look into DALI
 - [ ] clean up data preprocessing / add CORD19 stuff
  
