@@ -1,4 +1,12 @@
 hostfile
+data/download
+data/extracted
+data/formatted
+data/sharded
+data/tfrecord
+data/hdf5
+data/wikiextractor
+data/bookcorpus
 
 # Initially taken from Github's Python gitignore file
 

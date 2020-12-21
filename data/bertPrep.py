@@ -34,17 +34,17 @@ def main(args):
     if args.input_files:
         args.input_files = args.input_files.split(',')
 
-    hdf5_tfrecord_folder_prefix = "_lower_case_" + str(args.do_lower_case) + "_seq_len_" + str(args.max_seq_length) \
+    hdf5_tfrecord_folder_prefix = "lower_case_" + str(args.do_lower_case) + "_seq_len_" + str(args.max_seq_length) \
                                   + "_max_pred_" + str(args.max_predictions_per_seq) + "_masked_lm_prob_" + str(args.masked_lm_prob) \
                                   + "_random_seed_" + str(args.random_seed) + "_dupe_factor_" + str(args.dupe_factor)
 
     directory_structure = {
         'download' : working_dir + '/download',    # Downloaded and decompressed
         'extracted' : working_dir +'/extracted',    # Extracted from whatever the initial format is (e.g., wikiextractor)
-        'formatted' : working_dir + '/formatted_one_article_per_line',    # This is the level where all sources should look the same
-        'sharded' : working_dir + '/sharded_' + "training_shards_" + str(args.n_training_shards) + "_test_shards_" + str(args.n_test_shards) + "_fraction_" + str(args.fraction_test_set),
-        'tfrecord' : working_dir + '/tfrecord'+ hdf5_tfrecord_folder_prefix,
-        'hdf5': working_dir + '/hdf5' + hdf5_tfrecord_folder_prefix
+        'formatted' : working_dir + '/formatted/one_article_per_line',    # This is the level where all sources should look the same
+        'sharded' : working_dir + '/sharded/training_shards_' + str(args.n_training_shards) + "_test_shards_" + str(args.n_test_shards) + "_fraction_" + str(args.fraction_test_set),
+        'tfrecord' : working_dir + '/tfrecord/'+ hdf5_tfrecord_folder_prefix,
+        'hdf5': working_dir + '/hdf5/' + hdf5_tfrecord_folder_prefix
     }
 
     print('\nDirectory Structure:')
@@ -77,7 +77,7 @@ def main(args):
 
         elif args.dataset == 'wikicorpus_en':
             if args.skip_wikiextractor == 0:
-                path_to_wikiextractor_in_container = '/workspace/wikiextractor/WikiExtractor.py'
+                path_to_wikiextractor_in_container = 'data/wikiextractor/WikiExtractor.py'
                 wikiextractor_command = path_to_wikiextractor_in_container + ' ' + directory_structure['download'] + '/' + args.dataset + '/wikicorpus_en.xml ' + '-b 100M --processes ' + str(args.n_processes) + ' -o ' + directory_structure['extracted'] + '/' + args.dataset
                 print('WikiExtractor Command:', wikiextractor_command)
                 wikiextractor_process = subprocess.run(wikiextractor_command, shell=True, check=True)
@@ -91,7 +91,7 @@ def main(args):
         elif args.dataset == 'wikicorpus_zh':
             assert False, 'wikicorpus_zh not fully supported at this time. The simplified/tradition Chinese data needs to be translated and properly segmented still, and should work once this step is added.'
             if args.skip_wikiextractor == 0:
-                path_to_wikiextractor_in_container = '/workspace/wikiextractor/WikiExtractor.py'
+                path_to_wikiextractor_in_container = 'data/wikiextractor/WikiExtractor.py'
                 wikiextractor_command = path_to_wikiextractor_in_container + ' ' + directory_structure['download'] + '/' + args.dataset + '/wikicorpus_zh.xml ' + '-b 100M --processes ' + str(args.n_processes) + ' -o ' + directory_structure['extracted'] + '/' + args.dataset
                 print('WikiExtractor Command:', wikiextractor_command)
                 wikiextractor_process = subprocess.run(wikiextractor_command, shell=True, check=True)
@@ -147,7 +147,7 @@ def main(args):
             os.makedirs(directory_structure['tfrecord'] + "/" + args.dataset)
 
         def create_record_worker(filename_prefix, shard_id, output_format='tfrecord'):
-            bert_preprocessing_command = 'python /workspace/bert/create_pretraining_data.py'
+            bert_preprocessing_command = 'python create_pretraining_data.py'
             bert_preprocessing_command += ' --input_file=' + directory_structure['sharded'] + '/' + args.dataset + '/' + filename_prefix + '_' + str(shard_id) + '.txt'
             bert_preprocessing_command += ' --output_file=' + directory_structure['tfrecord'] + '/' + args.dataset + '/' + filename_prefix + '_' + str(shard_id) + '.' + output_format
             bert_preprocessing_command += ' --vocab_file=' + args.vocab_file
@@ -186,7 +186,7 @@ def main(args):
             os.makedirs(directory_structure['hdf5'] + "/" + args.dataset)
 
         def create_record_worker(filename_prefix, shard_id, output_format='hdf5'):
-            bert_preprocessing_command = 'python /workspace/bert/create_pretraining_data.py'
+            bert_preprocessing_command = 'python create_pretraining_data.py'
             bert_preprocessing_command += ' --input_file=' + directory_structure['sharded'] + '/' + args.dataset + '/' + filename_prefix + '_' + str(shard_id) + '.txt'
             bert_preprocessing_command += ' --output_file=' + directory_structure['hdf5'] + '/' + args.dataset + '/' + filename_prefix + '_' + str(shard_id) + '.' + output_format
             bert_preprocessing_command += ' --vocab_file=' + args.vocab_file

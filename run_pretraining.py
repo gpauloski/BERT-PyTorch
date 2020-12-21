@@ -496,6 +496,16 @@ def main(args):
 
 if __name__ == "__main__":
     args = parse_arguments()
+    
+    if args.input_dir is None:
+        raise ValueError('--input_dir must be provided via arguments or the '
+                         'config file')
+    if args.output_dir is None:
+        raise ValueError('--output_dir must be provided via arguments or the '
+                         'config file')
+    if args.model_config_file is None:
+        raise ValueError('--model_config_file must be provided via arguments '
+                         'or the config file')
 
     random.seed(args.seed + args.local_rank)
     np.random.seed(args.seed + args.local_rank)

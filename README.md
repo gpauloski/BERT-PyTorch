@@ -1,16 +1,52 @@
 # BERT For PyTorch
 
+**NOTE** This repository is cloned from [NVIDIA/DeepLearningExamples](https://github.com/NVIDIA/DeepLearningExamples/tree/master/PyTorch/LanguageModeling/BERT) and modified (no docker images, PyTorch AMP, custom logging).
+
+This repository provides a script and recipe to train the BERT model for PyTorch to achieve state-of-the-art accuracy, and is tested and maintained by NVIDIA.
+
+## ThetaGPU Quickstart
+
+1. **Build conda environment**
+
+   ```
+   $ conda env create --file conda_env.yml --force
+   $ conda activate bert-pytorch
+   ```
+
+   Install NVIDIA APEX. Must be done on a ThetaGPU node.
+   ```
+   $ git clone https://github.com/NVIDIA/apex
+   $ cd apex
+   $ pip install -v --disable-pip-version-check --no-cache-dir --global-option="--cpp_ext" --global-option="--cuda_ext" ./
+   ```
+2. **Build datasets** (skip if you already have dataset)
+
+   Download dependencies:
+   - `git clone https://github.com/attardi/wikiextractor.git data/wikiextractor && cd data/wikiextractor && git checkout 6408a430fc504a38b04d37ce5e7fc740191dee16 && cd ../..`
+   - `git clone https://github.com/soskek/bookcorpus.git data/bookcorpus`
+
+   Build wiki and fine-tuning tasks datasets `bash data/create_datasets_from_start.sh`.
+   To also include the BookCorpus dataset, add `--wiki_books`.
+
+3. **Training**
+   - Phase 1
+     ```
+     $ export OUTPUT_DIR_PATH=results/bert_pretraining
+     $ python -m torch.distributed.launch --nproc_per_node=8 run_pretraining.py --config_file config/bert_pretraining_phase1_config.json --output_dir $OUTPUT_DIR_PATH --input_dir /lus/theta-fs0/projects/SuperBERT/datasets/wikicorpus_en/phase1
+     ```
+   - Phase 2
+     ```
+     $ python -m torch.distributed.launch --nproc_per_node=8 run_pretraining.py --config_file config/bert_pretraining_phase2_config.json --output_dir $OUTPUT_DIR_PATH --input_dir /lus/theta-fs0/projects/SuperBERT/datasets/wikicorpus_en/phase2
+     ```
+   Training logs are written to `$OUTPUT_DIR_PATH/log.txt` and TensorBoard can be used for monitoring with `tensorboard --logdir=$OUTPUT_DIR_PATH`.
+
 ## TODO
 
-- [x] refactor run_pretraining.py
-  - [x] reduce args (auto calc gradient accumulation)
-  - [x] clean up mega training loop
-- [x] update to use custom logger
-- [ ] look into DALI
-- [ ] clean up data preprocessing / add CORD19 stuff
- 
-This repository provides a script and recipe to train the BERT model for PyTorch to achieve state-of-the-art accuracy, and is tested and maintained by NVIDIA.
- 
+- [ ] Support partial batch sizes (not powers of 2)
+- [ ] Update training scripts for multi-node and extra cmd line args
+- [ ] Add KFAC support
+- [ ] Improve data preprocessing (multithreading!!!)
+
 ## Table Of Contents
  
 - [Model overview](#model-overview)

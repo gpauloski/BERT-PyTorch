@@ -1,0 +1,26 @@
+name: bert-pytorch
+channels:
+  - pytorch
+  - defaults
+  - conda-forge
+dependencies:
+  - python==3.7.*
+  - pip
+  - numpy
+  - tqdm
+  - h5py 
+  - onnx
+  - pytorch
+  - torchvision
+  - torchaudio
+  - pip:
+      - tensorboard
+      - boto3
+      - requests
+      - six
+      - wget
+      - nltk
+      - progressbar
+      - html2text
+      - git+https://github.com/gpauloski/loggerplus
+
