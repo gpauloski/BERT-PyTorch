@@ -20,6 +20,8 @@ while [ "$1" != "" ]; do
             echo "  -n,--nnodes [int]   Number of nodes this script is launched on (default: 1)"
             echo "  -m,--master [str]   Address of master node (default: \"\")"
             echo "  -c,--config [path]  Config file for training (default: \"\")"
+            echo "  -i,--input  [path]  Input data directory (default: \"\")"
+            echo "  -o,--output [path]  Output data directoy (default: \"\")"
             exit 0
         ;;
         -N|--ngpus)
@@ -33,6 +35,12 @@ while [ "$1" != "" ]; do
         ;;
         -c|--config)
             CONFIG=$VALUE
+        ;;
+        -i|--input)
+            INPUT=$VALUE
+        ;;
+        -o|--output)
+            OUTPUT=$VALUE
         ;;
         *)
           echo "ERROR: unknown parameter \"$PARAM\""
@@ -52,5 +60,5 @@ echo Launching torch.distributed: nproc_per_node=$NGPUS, nnodes=$NNODES, master_
 
 python -m torch.distributed.launch \
    --nproc_per_node=$NGPUS --nnodes=$NNODES --node_rank=$LOCAL_RANK --master_addr=$MASTER \
-   run_pretraining.py --config_file=$CONFIG
+   run_pretraining.py --config_file=$CONFIG --input_dir=$INPUT --output_dir $OUTPUT
 

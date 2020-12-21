@@ -29,22 +29,34 @@ This repository provides a script and recipe to train the BERT model for PyTorch
    To also include the BookCorpus dataset, add `--wiki_books`.
 
 3. **Training**
-   - Phase 1
+
+   - Set bash variables
      ```
-     $ export OUTPUT_DIR_PATH=results/bert_pretraining
-     $ python -m torch.distributed.launch --nproc_per_node=8 run_pretraining.py --config_file config/bert_pretraining_phase1_config.json --output_dir $OUTPUT_DIR_PATH --input_dir /lus/theta-fs0/projects/SuperBERT/datasets/wikicorpus_en/phase1
+     $ export OUTPUT_DIR=results/bert_pretraining
+     $ export PHASE1_CONFIG=config/bert_pretraining_phase1_config.json
+     $ export PHASE2_CONFIG=config/bert_pretraining_phase2_config.json
+     $ export PHASE1_DATA=/lus/theta-fs0/projects/SuperBERT/datasets/wikicorpus_en/phase1
+     $ export PHASE2_DATA=/lus/theta-fs0/projects/SuperBERT/datasets/wikicorpus_en/phase2
      ```
-   - Phase 2
+   - Single-Node Multi-GPU Training
      ```
-     $ python -m torch.distributed.launch --nproc_per_node=8 run_pretraining.py --config_file config/bert_pretraining_phase2_config.json --output_dir $OUTPUT_DIR_PATH --input_dir /lus/theta-fs0/projects/SuperBERT/datasets/wikicorpus_en/phase2
+     $ python -m torch.distributed.launch --nproc_per_node=8 run_pretraining.py --config_file $PHASE1_CONFIG --input_dir=$PHASE1_DATA --output_dir $OUTPUT_DIR_PATH
      ```
-   Training logs are written to `$OUTPUT_DIR_PATH/log.txt` and TensorBoard can be used for monitoring with `tensorboard --logdir=$OUTPUT_DIR_PATH`.
+     After phase 1 training is finished, continue with phase 2 by running the same command withe phase 1 config and data paths (the output directory stays the same).
+   
+     Training logs are written to `$OUTPUT_DIR/log.txt` and TensorBoard can be used for monitoring with `tensorboard --logdir=$OUTPUT_DIR`.
+     See the [Theta TensorBoard Instructions](https://www.alcf.anl.gov/support-center/theta/tensorboard-instructions) for help using TensorBoard.
+   - Multi-Node Multi-GPU Training via Cobalt
+     ```
+     $ qsub scripts/run_pretraining.cobalt
+     ```
+     **Note** configure the Cobalt job settings in `scripts/run_pretraining.cobalt`.
 
 ## TODO
 
 - [ ] Support partial batch sizes (not powers of 2)
 - [ ] Update training scripts for multi-node and extra cmd line args
-- [ ] Add KFAC support
+- [x] Add KFAC support
 - [ ] Improve data preprocessing (multithreading!!!)
 
 ## Table Of Contents

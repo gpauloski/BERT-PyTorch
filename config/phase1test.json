@@ -6,8 +6,9 @@
 	"warmup_proportion": 0.2843,
 	"global_batch_size": 65536,
 	"local_batch_size": 64,
-	"max_steps": 7138,
+	"num_steps_per_checkpoint": 15,
+	"max_steps": 50,
 	"kfac": false,
-	"kfac_inv_interval": 10,
-	"kfac_factor_interval": 1
+	"kfac_inv_interval": 100,
+	"kfac_factor_interval": 10
 }

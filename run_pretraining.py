@@ -31,7 +31,9 @@ import os
 import random
 import signal
 import time
+import warnings
 import torch
+import kfac
 
 from apex.optimizers import FusedLAMB
 from torch.utils.data import DataLoader, RandomSampler, Dataset
@@ -163,6 +165,24 @@ def parse_arguments():
     parser.add_argument("--previous_phase_end_step", default=0, type=int,
                         help="Final step of previous phase")
 
+    ## KFAC Hyperparameters
+    parser.add_argument('--kfac', default=False, action='store_true',
+                        help='Use KFAC')
+    parser.add_argument('--kfac_inv_interval', type=int, default=10,
+                        help='iters between kfac inv ops')
+    parser.add_argument('--kfac_factor_interval', type=int, default=1,
+                        help='iters between kfac cov ops')
+    parser.add_argument('--kfac_stat_decay', type=float, default=0.95,
+                        help='Alpha value for covariance accumulation')
+    parser.add_argument('--kfac_damping', type=float, default=0.003,
+                        help='KFAC damping factor')
+    parser.add_argument('--kfac_kl_clip', type=float, default=0.001,
+                        help='KFAC KL gradient clip')
+    parser.add_argument('--kfac_skip_layers', nargs='+', type=str, 
+                        default=['BertLMPredictionHead', 'embedding'],
+                        help='Modules to ignore registering with KFAC '
+                             '(default: [BertLMPredictionHead, embedding])')
+
     # Set by torch.distributed.launch
     parser.add_argument('--local_rank', type=int, default=0,
                         help='local rank for distributed training')
@@ -207,18 +227,22 @@ def setup_training(args):
         raise ValueError('FP16 training enabled but unable to import torch.cuda.amp.'
                          'Is the torch version >= 1.6?')
 
-    if args.global_batch_size % get_world_size() != 0:
-        raise ValueError('global_batch_size={} should be divisible by '
-                         'world_size={}'.format(
-                         args.global_batch_size, get_world_size()))
-    local_accumulated_batch_size = args.global_batch_size // get_world_size()
+    if args.global_batch_size % get_world_size() != 0 and is_main_process():
+        warnings.warn('global_batch_size={} is not divisible by world_size={}.'
+                      ' The last batch will be padded with additional '
+                      'samples.'.format(
+                      args.global_batch_size, get_world_size()))
+    local_accumulated_batch_size = math.ceil(
+            args.global_batch_size / get_world_size())
 
-    if args.global_batch_size % get_world_size() != 0:
-        raise ValueError('local_accumulated_batch_size={} should be divisible '
+    if args.local_accumulated_batch_size % get_world_size() != 0 and is_main_process():
+        raise ValueError('local_accumulated_batch_size={} is not divisible '
                          'by local_batch_size={}. local_accumulated_batch_size '
-                         'is global_batch_size // world_size.'.format(
+                         'is global_batch_size // world_size. The last '
+                         'batch will be padded with additional samples'.format(
                          local_accumulated_batch_size, get_world_size()))
-    args.accumulation_steps = local_accumulated_batch_size // args.local_batch_size
+    args.accumulation_steps = math.ceil(
+            local_accumulated_batch_size // args.local_batch_size)
 
     return args
 
@@ -280,10 +304,52 @@ def prepare_optimizers(args, model, checkpoint, global_step):
 
     optimizer = FusedLAMB(optimizer_grouped_parameters,
                           lr=args.learning_rate)
-    #torch.optim.SGD(optimizer_grouped_parameters, lr=args.learning_rate)
-    lr_scheduler = PolyWarmUpScheduler(optimizer,
-                                       warmup=args.warmup_proportion,
-                                       total_steps=args.max_steps)
+    lr_schedulers = [PolyWarmUpScheduler(optimizer,
+                                         warmup=args.warmup_proportion,
+                                         total_steps=args.max_steps)]
+
+    scaler = None
+    if args.fp16:
+        scaler = GradScaler()
+
+    preconditioner = None
+    if args.kfac:
+        preconditioner = kfac.KFAC(
+            model,
+            lr=args.learning_rate, 
+            factor_decay=args.kfac_stat_decay,
+            damping=args.kfac_damping, 
+            kl_clip=args.kfac_kl_clip,
+            batch_first=True,
+            factor_update_freq=args.kfac_factor_interval,
+            inv_update_freq=args.kfac_inv_interval,
+            use_eigen_decomp=True,
+            # Skip TrainingHeads which contains the decoder, a Linear module
+            # with shape (seq_len, vocab_size), such that it is too large to invert
+            skip_layers=args.kfac_skip_layers,
+            # False b/c we use grad accumulation, accumulating the input/output
+            # data will substantially increase memory usage
+            accumulate_data=False,
+            # BERT calls KFAC very infrequently so no need to optimize for
+            # communication. Optimize for memory instead.
+            comm_method=kfac.CommMethod.MEM_OPT,
+            # Compute the factors and update the running averages during the
+            # forward backward pass b/c we are using grad accumulation but
+            # not accumulating the input/output data
+            compute_factor_in_hook=True,
+            distribute_layer_factors=False,
+            grad_scaler=scaler,
+            verbose=False,
+        )
+        lrs = PolyWarmUpScheduler(
+            preconditioner, 
+            warmup=args.warmup_proportion, 
+            total_steps=args.max_steps
+        )
+        lr_schedulers.append(lrs)
+
+        if is_main_process():
+            logger.info(preconditioner)
 
     if checkpoint is not None:
         if args.resume_step >= args.previous_phase_end_step:
@@ -297,15 +363,19 @@ def prepare_optimizers(args, model, checkpoint, global_step):
                 checkpoint['optimizer']['param_groups'][iter]['warmup'] = args.warmup_proportion
                 checkpoint['optimizer']['param_groups'][iter]['lr'] = args.learning_rate
         optimizer.load_state_dict(checkpoint['optimizer'])
+        if ('preconditioner' in checkpoint and
+                checkpoint['preconditioner'] is not None and
+                preconditioner is not None):
+            preconditioner.load_state_dict(checkpoint['preconditioner'])
 
-    scaler = None
-    if args.fp16:
-        scaler = GradScaler()
-
-    return optimizer, lr_scheduler, scaler
+    return optimizer, preconditioner, lr_schedulers, scaler
 
 
-def take_optimizer_step(optimizer, model, scaler):
+def take_optimizer_step(optimizer, preconditioner, model, scaler):
+    if preconditioner is not None:
+        if scaler is not None:
+            scaler.unscale_(optimizer)
+        preconditioner.step()
     if scaler is not None:
         scaler.step(optimizer)
         scaler.update()
@@ -316,7 +386,8 @@ def take_optimizer_step(optimizer, model, scaler):
         param.grad = None
 
 
-def forward_backward_pass(model, criterion, scaler, batch, divisor):
+def forward_backward_pass(model, criterion, scaler, batch, divisor,
+                          sync_grads=True):
     input_ids, segment_ids, input_mask, masked_lm_labels, next_sentence_labels = batch
 
     if scaler is not None:
@@ -343,11 +414,17 @@ def forward_backward_pass(model, criterion, scaler, batch, divisor):
 
     loss = loss / divisor
 
-    # TODO: do we want to model.no_sync() here when accumulating gradients?
-    if scaler is not None:
-        scaler.scale(loss).backward()
+    if not sync_grads:
+        with model.no_sync():
+            if scaler is not None:
+                scaler.scale(loss).backward()
+            else:
+                loss.backward()
     else:
-        loss.backward()
+        if scaler is not None:
+            scaler.scale(loss).backward()
+        else:
+            loss.backward()
 
     return loss
 
@@ -356,7 +433,7 @@ def main(args):
     global timeout_sent
 
     model, checkpoint, global_step, criterion, args = prepare_model(args)
-    optimizer, lr_scheduler, scaler = prepare_optimizers(
+    optimizer, preconditioner, lr_schedulers, scaler = prepare_optimizers(
             args, model, checkpoint, global_step)
 
     model.train()
@@ -432,21 +509,17 @@ def main(args):
 
                 batch = [t.to(args.device) for t in batch]
                 loss = forward_backward_pass(model, criterion, scaler, batch,
-                                             args.accumulation_steps)
+                        args.accumulation_steps,
+                        sync_grads=training_steps % args.accumulation_steps==0)
                 average_loss += loss.item()
 
                 if training_steps % args.accumulation_steps == 0:
-                    lr_scheduler.step()
-                    take_optimizer_step(optimizer, model, scaler)
+                    for lrs in lr_schedulers:
+                        lrs.step()
+                    take_optimizer_step(optimizer, preconditioner, 
+                            model, scaler)
                     global_step += 1
 
-                #if global_step >= args.max_steps:
-                #    average_loss = torch.tensor(average_loss, dtype=torch.float32).cuda()
-                #    average_loss = average_loss * 
-                #    average_loss /= get_world_size()
-                #    torch.distributed.all_reduce(average_loss)
-                #    final_loss = average_loss.item()
-                #    logger.info('final_loss: {}'.format(final_loss))
                 if training_steps % args.accumulation_steps == 0:
                     logger.log(tag='train',
                                step=global_step+args.previous_phase_end_step,
@@ -470,6 +543,8 @@ def main(args):
                             {
                                 'model': model_to_save.state_dict(),
                                 'optimizer': optimizer.state_dict(),
+                                'preconditioner': preconditioner.state_dict()
+                                        if preconditioner is not None else None,
                                 'files': [f_id] + files,
                                 'epoch': epoch,
                                 'data_loader': None if global_step >= args.max_steps else train_dataloader
@@ -519,7 +594,7 @@ if __name__ == "__main__":
     global_step, train_time = main(args)
     runtime = time.time() - start_time
 
-    logger.info("runtime: {}  train_time={}  training_seq_per_sec: {}".format(
+    logger.info("runtime: {}  train_time: {}  training_seq_per_sec: {}".format(
             runtime, train_time,
-            args.global_batch_size * (global_step - args.resume_step) / train_time))
+            args.global_batch_size * global_step / train_time))
 

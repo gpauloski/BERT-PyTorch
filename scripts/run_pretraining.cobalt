@@ -1,0 +1,29 @@
+#!/bin/bash
+
+#COBALT -t 24:00:00 
+#COBALT -n 4
+#COBALT -q full-node
+#COBALT -A SuperBERT
+#COBALT -O cobalt_logs
+
+PHASE1_CONFIG=config/bert_pretraining_phase1_config.json
+PHASE2_CONFIG=config/bert_pretraining_phase2_config.json
+PHASE1_DATA=/lus/theta-fs0/projects/SuperBERT/datasets/wikicorpus_en/phase1
+PHASE2_DATA=/lus/theta-fs0/projects/SuperBERT/datasets/wikicorpus_en/phase2
+OUTPUT_DIR=results/bert_pretraining
+
+HOSTS=$(cat $COBALT_NODEFILE | sed ':a;N;$!ba;s/\n/,/g')
+MASTER_RANK=$(head -n 1 $COBALT_NODEFILE)
+NNODES=$(< $HOSTFILE wc -l)
+NGPUS=8
+
+# PHASE 1
+mpirun --np $NNODES --host $HOST bash scripts/launch_pretraining.sh \
+    --ngpus $NGPUS --nnodes $NNODES --master $MASTER_RANK \
+	--config $PHASE1_CONFIG --input_dir $PHASE1_DATA --output_dir $OUTPUT_DIR
+
+# PHASE 2
+mpirun --np $NNODES --host $HOST bash scripts/launch_pretraining.sh \
+    --ngpus $NGPUS --nnodes $NNODES --master $MASTER_RANK \
+	--config $PHASE2_CONFIG --input_dir $PHASE2_DATA --output_dir $OUTPUT_DIR
+
