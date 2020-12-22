@@ -64,7 +64,6 @@ def signal_handler(sig, frame):
 
 signal.signal(signal.SIGTERM, signal_handler)
 
-
 def create_pretraining_dataset(input_file, max_pred_length, shared_list, args, worker_init):
     train_data = pretraining_dataset(input_file=input_file, max_pred_length=max_pred_length)
     train_sampler = RandomSampler(train_data)
@@ -533,6 +532,8 @@ def main(args):
                 if (global_step >= args.max_steps or
                         training_steps % (args.num_steps_per_checkpoint * args.accumulation_steps) == 0 or
                         timeout_sent):
+                    if global_step >= args.max_steps or timeout_sent:
+                        final_time = time.time() - train_time_start
                     if is_main_process() and not args.skip_checkpoint:
                         # Save a trained model
                         logger.info('Saving checkpoint: global_step={}'.format(
@@ -562,7 +563,7 @@ def main(args):
                 # timeout from the cluster scheduler
                 if global_step >= args.max_steps or timeout_sent:
                     del train_dataloader
-                    return global_step, time.time() - train_time_start
+                    return global_step, final_time
 
             del train_dataloader
             train_dataloader, data_file = dataset_future.result(timeout=None)

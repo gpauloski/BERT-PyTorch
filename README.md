@@ -6,7 +6,7 @@ This repository provides scripts for BERT pretraining and finetuning.
 
 ## ThetaGPU Quickstart
 
-#### **1. Build conda environment**
+### **1. Build conda environment**
 
 ```
 $ conda env create --file environment.yml --force
@@ -20,13 +20,13 @@ $ cd apex
 $ pip install -v --disable-pip-version-check --no-cache-dir --global-option="--cpp_ext" --global-option="--cuda_ext" ./
 ```
 
-#### **2. Build datasets** 
+### **2. Build datasets** 
 
 Skip this section if you already have dataset.
 
 Download dependencies:
 ```
-$git clone https://github.com/attardi/wikiextractor.git data/wikiextractor && cd data/wikiextractor && git checkout 6408a430fc504a38b04d37ce5e7fc740191dee16 && cd ../..
+$ git clone https://github.com/attardi/wikiextractor.git data/wikiextractor && cd data/wikiextractor && git checkout 6408a430fc504a38b04d37ce5e7fc740191dee16 && cd ../..
 $ git clone https://github.com/soskek/bookcorpus.git data/bookcorpus
 ```
 Build wiki and fine-tuning tasks datasets:
@@ -36,7 +36,7 @@ $ bash data/create_datasets_from_start.sh
 To also include the BookCorpus dataset, add `--wiki_books`.
 This step can take tens of hours due to the largly single-threaded scripts (this is going to be updated).
 
-#### **3. Training**
+### **3. Training**
 
 1. Launch an interactive session:
    ```
@@ -55,20 +55,29 @@ This step can take tens of hours due to the largly single-threaded scripts (this
      ```
      $ python -m torch.distributed.launch --nproc_per_node=8 run_pretraining.py --config_file $PHASE1_CONFIG --input_dir=$PHASE1_DATA --output_dir $OUTPUT_DIR
      ```
-   - Multi-Node Multi-GPU Training (2 nodes, 8 GPUs/node) 
+   - Manual Multi-Node Multi-GPU Training (2 nodes, 8 GPUs/node)
      ```
-     $ mpirun --np 2 --hostfile $COBALT_NODEFILE ./scripts/launch_pretraining.sh --ngpus 8 --nnodes 2 --master $MASTER_NODE --config $PHASE1_CONFIG --input $PHASE1_DATA --output $OUTPUT_DIR
+     $ python -m torch.distributed.launch --node_rank=$RANK --master_addr=$MASTER --nnodes=$NODE_COUNT --nproc_per_node=8 --config $PHASE1_CONFIG --input_dir $PHASE1_DATA --output_dir $OUTPUT_DIR
      ```
-   After phase 1 training is finished, continue with phase 2 by running the same command with the phase 2 config and data paths (the output directory stays the same).
-   
-   Training logs are written to `$OUTPUT_DIR/log.txt`, and TensorBoard can be used for monitoring with `tensorboard --logdir=$OUTPUT_DIR`.
-   See the [Theta TensorBoard Instructions](https://www.alcf.anl.gov/support-center/theta/tensorboard-instructions) for help using TensorBoard.
+     This command must be run on each node where the `--node_rank` is changed appropriately.
+     `$MASTER` is the hostname of the first node (e.g. thetagpu08).
+   - Automatic Multi-Node Multi-GPU Training (2 nodes, 8 GPUs/node)
+     ```
+     $ ./scripts/run_pretraining.cobalt
+     ```
+     The training environment will be automatically configured using `$COBALT_NODEFILE`.
+     Config files and data paths can be modified at the top of the cobalt script.
+     To run the default phase 2 training, set `PHASE=2` in the script.
+     Instead of running the script in an interactive qsub, the script can be used as a Cobalt job script:
+     ```
+     $ qsub scripts/run_pretraining.cobalt
+     ```
+     Modify the Cobalt job specifications at the top of the script as needed.
 
-Alternatively, an example Cobalt submission script is given in `scripts/run_pretraining.cobalt`.
-This script can be edited as needed.
-```
-$ qsub scripts/run_pretraining.cobalt
-```
+After phase 1 training is finished, continue with phase 2 by running the same command with the phase 2 config and data paths (the output directory stays the same).
+   
+Training logs are written to `$OUTPUT_DIR/log.txt`, and TensorBoard can be used for monitoring with `tensorboard --logdir=$OUTPUT_DIR`.
+See the [Theta TensorBoard Instructions](https://www.alcf.anl.gov/support-center/theta/tensorboard-instructions) for help using TensorBoard.
 
 ## TODO
 
@@ -76,10 +85,10 @@ $ qsub scripts/run_pretraining.cobalt
 - [x] Update training scripts for multi-node and extra cmd line args
 - [x] Add KFAC support
 - [ ] Improve data preprocessing (multithreading!!!)
-- [ ] Investigate multi-node training being slower than single-node on thetagpu
-  - this was not the case on longhorn
-  - maybe too many dataloader threads accessing shared filesystem?
-  - check if infiniband is being used
+- [x] Investigate multi-node training being slower than single-node on thetagpu
+  - The problem is related to using `mpirun` to run the PyTorch distributed launcher on each node.
+  - Running the distributed launcher manually on each node works well (~4200 samples/sec vs ~1700 samples/sec when using `mpirun`).
+  - `run_pretraining.cobalt` has been changed to ssh into each node to launch the distributed processes instead of using MPI. 
 
 ## Table Of Contents
  
