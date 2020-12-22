@@ -40,7 +40,7 @@ This repository provides a script and recipe to train the BERT model for PyTorch
      ```
    - Single-Node Multi-GPU Training
      ```
-     $ python -m torch.distributed.launch --nproc_per_node=8 run_pretraining.py --config_file $PHASE1_CONFIG --input_dir=$PHASE1_DATA --output_dir $OUTPUT_DIR_PATH
+     $ python -m torch.distributed.launch --nproc_per_node=8 run_pretraining.py --config_file $PHASE1_CONFIG --input_dir=$PHASE1_DATA --output_dir $OUTPUT_DIR
      ```
      After phase 1 training is finished, continue with phase 2 by running the same command withe phase 1 config and data paths (the output directory stays the same).
    
