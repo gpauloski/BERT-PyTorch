@@ -46,11 +46,16 @@ This repository provides a script and recipe to train the BERT model for PyTorch
    
      Training logs are written to `$OUTPUT_DIR/log.txt` and TensorBoard can be used for monitoring with `tensorboard --logdir=$OUTPUT_DIR`.
      See the [Theta TensorBoard Instructions](https://www.alcf.anl.gov/support-center/theta/tensorboard-instructions) for help using TensorBoard.
-   - Multi-Node Multi-GPU Training via Cobalt
+   - Multi-Node Multi-GPU Training
+     
+     Cobalt job submission (edit the job config in `scripts/run_pretraining.cobalt` first):
      ```
      $ qsub scripts/run_pretraining.cobalt
      ```
-     **Note** configure the Cobalt job settings in `scripts/run_pretraining.cobalt`.
+     In an interactive session (2 nodes, 8 GPU/node):
+     ```
+     $ mpirun --np 2 --hostfile $COBALT_NODEFILE ./scripts/launch_pretraining.sh --ngpus 8 --nnodes 2 --master thetagpu05 --config $PHASE1_CONFIG --input $PHASE1_DATA --output $OUTPUT_DIR
+     ```
 
 ## TODO
 
