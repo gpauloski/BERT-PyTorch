@@ -5,7 +5,7 @@
 	"learning_rate": 6e-3,
 	"warmup_proportion": 0.2843,
 	"global_batch_size": 65536,
-	"local_batch_size": 64,
+	"local_batch_size": 108,
 	"max_steps": 7138,
 	"kfac": false,
 	"kfac_inv_interval": 10,

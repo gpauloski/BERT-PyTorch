@@ -221,7 +221,8 @@ def setup_training(args):
         ]
     )
 
-    logger.info('Torch distributed initialized (world_size={})'.format(get_world_size()))
+    logger.info('Torch distributed initialized (world_size={}, backend={})'.format(
+            get_world_size(), torch.distributed.get_backend()))
 
     if not TORCH_FP16 and args.fp16:
         raise ValueError('FP16 training enabled but unable to import torch.cuda.amp.'
@@ -232,17 +233,17 @@ def setup_training(args):
                       ' The last batch will be padded with additional '
                       'samples.'.format(
                       args.global_batch_size, get_world_size()))
-    local_accumulated_batch_size = math.ceil(
+    args.local_accumulated_batch_size = math.ceil(
             args.global_batch_size / get_world_size())
 
-    if local_accumulated_batch_size % get_world_size() != 0 and is_main_process():
+    if args.local_accumulated_batch_size % get_world_size() != 0 and is_main_process():
         raise ValueError('local_accumulated_batch_size={} is not divisible '
                          'by local_batch_size={}. local_accumulated_batch_size '
                          'is global_batch_size // world_size. The last '
                          'batch will be padded with additional samples'.format(
-                         local_accumulated_batch_size, get_world_size()))
+                         args.local_accumulated_batch_size, get_world_size()))
     args.accumulation_steps = math.ceil(
-            local_accumulated_batch_size // args.local_batch_size)
+            args.local_accumulated_batch_size / args.local_batch_size)
 
     return args
 

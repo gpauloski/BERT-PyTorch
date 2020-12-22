@@ -2,67 +2,84 @@
 
 **NOTE** This repository is cloned from [NVIDIA/DeepLearningExamples](https://github.com/NVIDIA/DeepLearningExamples/tree/master/PyTorch/LanguageModeling/BERT) and modified (no docker images, PyTorch AMP, custom logging).
 
-This repository provides a script and recipe to train the BERT model for PyTorch to achieve state-of-the-art accuracy, and is tested and maintained by NVIDIA.
+This repository provides scripts for BERT pretraining and finetuning.
 
 ## ThetaGPU Quickstart
 
-1. **Build conda environment**
+#### **1. Build conda environment**
 
+```
+$ conda env create --file environment.yml --force
+$ conda activate bert-pytorch
+```
+
+Install NVIDIA APEX. Must be done on a ThetaGPU node.
+```
+$ git clone https://github.com/NVIDIA/apex
+$ cd apex
+$ pip install -v --disable-pip-version-check --no-cache-dir --global-option="--cpp_ext" --global-option="--cuda_ext" ./
+```
+
+#### **2. Build datasets** 
+
+Skip this section if you already have dataset.
+
+Download dependencies:
+```
+$git clone https://github.com/attardi/wikiextractor.git data/wikiextractor && cd data/wikiextractor && git checkout 6408a430fc504a38b04d37ce5e7fc740191dee16 && cd ../..
+$ git clone https://github.com/soskek/bookcorpus.git data/bookcorpus
+```
+Build wiki and fine-tuning tasks datasets:
+```
+$ bash data/create_datasets_from_start.sh
+```
+To also include the BookCorpus dataset, add `--wiki_books`.
+This step can take tens of hours due to the largly single-threaded scripts (this is going to be updated).
+
+#### **3. Training**
+
+1. Launch an interactive session:
    ```
-   $ conda env create --file conda_env.yml --force
-   $ conda activate bert-pytorch
+   qsub -A $PROJECT_NAME -I -q full-node -n $NODE_COUNT -t $TIME
    ```
-
-   Install NVIDIA APEX. Must be done on a ThetaGPU node.
+2. Set bash variables:
    ```
-   $ git clone https://github.com/NVIDIA/apex
-   $ cd apex
-   $ pip install -v --disable-pip-version-check --no-cache-dir --global-option="--cpp_ext" --global-option="--cuda_ext" ./
+   $ export OUTPUT_DIR=results/bert_pretraining
+   $ export PHASE1_CONFIG=config/bert_pretraining_phase1_config.json
+   $ export PHASE2_CONFIG=config/bert_pretraining_phase2_config.json
+   $ export PHASE1_DATA=/lus/theta-fs0/projects/SuperBERT/datasets/wikicorpus_en/phase1
+   $ export PHASE2_DATA=/lus/theta-fs0/projects/SuperBERT/datasets/wikicorpus_en/phase2
    ```
-2. **Build datasets** (skip if you already have dataset)
-
-   Download dependencies:
-   - `git clone https://github.com/attardi/wikiextractor.git data/wikiextractor && cd data/wikiextractor && git checkout 6408a430fc504a38b04d37ce5e7fc740191dee16 && cd ../..`
-   - `git clone https://github.com/soskek/bookcorpus.git data/bookcorpus`
-
-   Build wiki and fine-tuning tasks datasets `bash data/create_datasets_from_start.sh`.
-   To also include the BookCorpus dataset, add `--wiki_books`.
-
-3. **Training**
-
-   - Set bash variables
-     ```
-     $ export OUTPUT_DIR=results/bert_pretraining
-     $ export PHASE1_CONFIG=config/bert_pretraining_phase1_config.json
-     $ export PHASE2_CONFIG=config/bert_pretraining_phase2_config.json
-     $ export PHASE1_DATA=/lus/theta-fs0/projects/SuperBERT/datasets/wikicorpus_en/phase1
-     $ export PHASE2_DATA=/lus/theta-fs0/projects/SuperBERT/datasets/wikicorpus_en/phase2
-     ```
-   - Single-Node Multi-GPU Training
+3. Launch Training:
+   - Single-Node Multi-GPU Training (1 node, 8 GPUs/node)
      ```
      $ python -m torch.distributed.launch --nproc_per_node=8 run_pretraining.py --config_file $PHASE1_CONFIG --input_dir=$PHASE1_DATA --output_dir $OUTPUT_DIR
      ```
-     After phase 1 training is finished, continue with phase 2 by running the same command withe phase 1 config and data paths (the output directory stays the same).
+   - Multi-Node Multi-GPU Training (2 nodes, 8 GPUs/node) 
+     ```
+     $ mpirun --np 2 --hostfile $COBALT_NODEFILE ./scripts/launch_pretraining.sh --ngpus 8 --nnodes 2 --master $MASTER_NODE --config $PHASE1_CONFIG --input $PHASE1_DATA --output $OUTPUT_DIR
+     ```
+   After phase 1 training is finished, continue with phase 2 by running the same command with the phase 2 config and data paths (the output directory stays the same).
    
-     Training logs are written to `$OUTPUT_DIR/log.txt` and TensorBoard can be used for monitoring with `tensorboard --logdir=$OUTPUT_DIR`.
-     See the [Theta TensorBoard Instructions](https://www.alcf.anl.gov/support-center/theta/tensorboard-instructions) for help using TensorBoard.
-   - Multi-Node Multi-GPU Training
-     
-     Cobalt job submission (edit the job config in `scripts/run_pretraining.cobalt` first):
-     ```
-     $ qsub scripts/run_pretraining.cobalt
-     ```
-     In an interactive session (2 nodes, 8 GPU/node):
-     ```
-     $ mpirun --np 2 --hostfile $COBALT_NODEFILE ./scripts/launch_pretraining.sh --ngpus 8 --nnodes 2 --master thetagpu05 --config $PHASE1_CONFIG --input $PHASE1_DATA --output $OUTPUT_DIR
-     ```
+   Training logs are written to `$OUTPUT_DIR/log.txt`, and TensorBoard can be used for monitoring with `tensorboard --logdir=$OUTPUT_DIR`.
+   See the [Theta TensorBoard Instructions](https://www.alcf.anl.gov/support-center/theta/tensorboard-instructions) for help using TensorBoard.
+
+Alternatively, an example Cobalt submission script is given in `scripts/run_pretraining.cobalt`.
+This script can be edited as needed.
+```
+$ qsub scripts/run_pretraining.cobalt
+```
 
 ## TODO
 
-- [ ] Support partial batch sizes (not powers of 2)
-- [ ] Update training scripts for multi-node and extra cmd line args
+- [x] Support partial batch sizes (not powers of 2)
+- [x] Update training scripts for multi-node and extra cmd line args
 - [x] Add KFAC support
 - [ ] Improve data preprocessing (multithreading!!!)
+- [ ] Investigate multi-node training being slower than single-node on thetagpu
+  - this was not the case on longhorn
+  - maybe too many dataloader threads accessing shared filesystem?
+  - check if infiniband is being used
 
 ## Table Of Contents
  

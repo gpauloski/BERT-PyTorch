@@ -17,12 +17,14 @@ NNODES=$(< $COBALT_NODEFILE wc -l)
 NGPUS=8
 
 # PHASE 1
-mpirun --np $NNODES --hostfile $COBALT_NODEFILE ./scripts/launch_pretraining.sh \
+mpirun --np $NNODES -npernode 1 --hostfile $COBALT_NODEFILE \
+  ./scripts/launch_pretraining.sh \
     --ngpus $NGPUS --nnodes $NNODES --master $MASTER_RANK \
 	--config $PHASE1_CONFIG --input $PHASE1_DATA --output $OUTPUT_DIR
 
 # PHASE 2
-mpirun --np $NNODES --hostfile $COBALT_NODEFILE ./scripts/launch_pretraining.sh \
+mpirun --np $NNODES -npernode 1 --hostfile $COBALT_NODEFILE \
+  ./scripts/launch_pretraining.sh \
     --ngpus $NGPUS --nnodes $NNODES --master $MASTER_RANK \
 	--config $PHASE2_CONFIG --input $PHASE2_DATA --output $OUTPUT_DIR
 

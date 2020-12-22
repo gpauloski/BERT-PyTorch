@@ -50,6 +50,9 @@ while [ "$1" != "" ]; do
     shift
 done
 
+source /lus/theta-fs0/software/thetagpu/conda/pt_master/2020-11-25/mconda3/setup.sh
+conda activate bert-pytorch
+
 if [[ -z "${OMPI_COMM_WORLD_RANK}" ]]; then
     LOCAL_RANK=$MV2_COMM_WORLD_RANK
 else
@@ -59,7 +62,12 @@ fi
 NUM_THREADS=$(grep ^cpu\\scores /proc/cpuinfo | uniq |  awk '{print $4}')
 export OMP_NUM_THREADS=$((NUM_THREADS / NGPUS))
 
-echo Launching torch.distributed: nproc_per_node=$NGPUS, nnodes=$NNODES, master_addr=$MASTER, local_rank=$LOCAL_RANK, OMP_NUM_THREADS=$OMP_NUM_THREADS
+which python
+#which nvcc
+#nvcc --version
+
+echo Launching torch.distributed: nproc_per_node=$NGPUS, nnodes=$NNODES, master_addr=$MASTER, local_rank=$LOCAL_RANK, OMP_NUM_THREADS=$OMP_NUM_THREADS, host=$HOSTNAME
+
 
 python -m torch.distributed.launch \
    --nproc_per_node=$NGPUS --nnodes=$NNODES --node_rank=$LOCAL_RANK --master_addr=$MASTER \
