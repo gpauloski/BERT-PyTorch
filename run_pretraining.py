@@ -235,7 +235,7 @@ def setup_training(args):
     local_accumulated_batch_size = math.ceil(
             args.global_batch_size / get_world_size())
 
-    if args.local_accumulated_batch_size % get_world_size() != 0 and is_main_process():
+    if local_accumulated_batch_size % get_world_size() != 0 and is_main_process():
         raise ValueError('local_accumulated_batch_size={} is not divisible '
                          'by local_batch_size={}. local_accumulated_batch_size '
                          'is global_batch_size // world_size. The last '

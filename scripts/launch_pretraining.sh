@@ -50,13 +50,16 @@ while [ "$1" != "" ]; do
     shift
 done
 
-if [ -z "$OPMI_COMM_WORLD_RANK" ]; then
+if [[ -z "${OMPI_COMM_WORLD_RANK}" ]]; then
     LOCAL_RANK=$MV2_COMM_WORLD_RANK
 else
-    LOCAL_RANK=$OMPI_COMM_WORLD_RANK
+    LOCAL_RANK=${OMPI_COMM_WORLD_RANK}
 fi
 
-echo Launching torch.distributed: nproc_per_node=$NGPUS, nnodes=$NNODES, master_addr=$MASTER, local_rank=$LOCAL_RANK
+NUM_THREADS=$(grep ^cpu\\scores /proc/cpuinfo | uniq |  awk '{print $4}')
+export OMP_NUM_THREADS=$((NUM_THREADS / NGPUS))
+
+echo Launching torch.distributed: nproc_per_node=$NGPUS, nnodes=$NNODES, master_addr=$MASTER, local_rank=$LOCAL_RANK, OMP_NUM_THREADS=$OMP_NUM_THREADS
 
 python -m torch.distributed.launch \
    --nproc_per_node=$NGPUS --nnodes=$NNODES --node_rank=$LOCAL_RANK --master_addr=$MASTER \
