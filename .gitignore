@@ -1,14 +1,7 @@
 hostfile
-data/download
-data/extracted
-data/formatted
-data/sharded
-data/tfrecord
-data/hdf5
-data/wikiextractor
-data/bookcorpus
-cobalt_logs
-sbatch_logs
+data/
+cobalt_logs/
+sbatch_logs/
 
 # Initially taken from Github's Python gitignore file
 

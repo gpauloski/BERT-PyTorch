@@ -236,11 +236,11 @@ def setup_training(args):
             args.global_batch_size / get_world_size())
 
     if args.local_accumulated_batch_size % get_world_size() != 0 and is_main_process():
-        raise ValueError('local_accumulated_batch_size={} is not divisible '
-                         'by local_batch_size={}. local_accumulated_batch_size '
-                         'is global_batch_size // world_size. The last '
-                         'batch will be padded with additional samples'.format(
-                         args.local_accumulated_batch_size, get_world_size()))
+        warnings.warn('local_accumulated_batch_size={} is not divisible '
+                      'by local_batch_size={}. local_accumulated_batch_size '
+                      'is global_batch_size // world_size. The last '
+                      'batch will be padded with additional samples'.format(
+                      args.local_accumulated_batch_size, get_world_size()))
     args.accumulation_steps = math.ceil(
             args.local_accumulated_batch_size / args.local_batch_size)
 

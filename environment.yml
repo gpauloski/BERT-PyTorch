@@ -9,19 +9,13 @@ dependencies:
   - numpy
   - tqdm
   - h5py 
-  - onnx
   - pytorch
-  - torchvision
-  - torchaudio
   - pip:
       - tensorboard
-      - boto3
       - requests
       - six
-      - wget
       - nltk
-      - progressbar
-      - html2text
+      - wikiextractor
       - git+https://github.com/gpauloski/loggerplus
       - git+https://github.com/gpauloski/kfac_pytorch@experimental
 
