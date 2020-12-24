@@ -31,12 +31,12 @@ $ git clone https://github.com/soskek/bookcorpus.git data/bookcorpus
 ```
 Build wiki and fine-tuning tasks datasets:
 ```
-$ bash scripts/create_datasets.sh /path/to/save/data
+$ bash scripts/create_datasets.sh
 ```
+The datasets will be written to `data/` by default, but an optional path can be provided as an argument to the script.
 Downloading the datasets can take many hours.
-Formatting and encoding can be made faster by increasing the number of processes used in the script.
-This steps will uses a couple hundred GBs of space.
-Each process can peak at 5-10 GB of RAM usage depending on the number/size of the shards.
+Formatting and encoding can be made faster by increasing the number of processes used in the script at the cost of more RAM (as much as 10 GB per process).
+This steps will uses a couple hundred GBs of disk space.
 
 ### **3. Training**
 

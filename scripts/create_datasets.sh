@@ -1,12 +1,6 @@
 #!/bin/bash
 
-if [[ $# -ne 1 ]]; then
-    echo "ERROR: Missing path argument"
-    echo "Usage: ./create_datasets.sh /path/for/datasets"
-    exit 1
-fi
-
-DATA_PATH=${1}
+DATA_PATH=${1:-data}
 
 N_PROCESSES=16
 DOWNLOAD_PATH=$DATA_PATH/download
