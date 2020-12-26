@@ -16,6 +16,8 @@ dependencies:
       - six
       - nltk
       - wikiextractor
+      - html2text
+      - progressbar
       - git+https://github.com/gpauloski/loggerplus
       - git+https://github.com/gpauloski/kfac_pytorch@experimental
 
