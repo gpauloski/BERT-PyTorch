@@ -127,11 +127,15 @@ class BooksCorpusFormatter(Formatter):
         start_time = time.time()
         with open(output_file, mode='w', encoding='utf-8') as ofile:
             for input_file in input_files:
-                with open(input_file, mode='r', encoding='utf-8-sig') as ifile:
-                    sentences = get_sentences(ifile.read())
-                    for s in sentences:
-                        ofile.write(s.strip() + '\n')
-                    ofile.write('\n')
+                try:
+                    with open(input_file, mode='r') as ifile:
+                        sentences = get_sentences(ifile.read())
+                        for s in sentences:
+                            ofile.write(s.strip() + '\n')
+                        ofile.write('\n')
+                except:
+                    print('[{}] Unable to format {}'.format(
+                            self.name, input_file))
         print('[{}] Finished shard: {} (time={:.1f}s)'.format(
                 self.name, output_file, time.time() - start_time))
 
