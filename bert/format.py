@@ -123,7 +123,7 @@ class BooksCorpusFormatter(Formatter):
         super(BooksCorpusFormatter, self).__init__(
                 'bookscorpus', input_dir, output_dir)
 
-    def _format(input_files, output_file):
+    def _format(self, input_files, output_file):
         start_time = time.time()
         with open(output_file, mode='w', encoding='utf-8') as ofile:
             for input_file in input_files:

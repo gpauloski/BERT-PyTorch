@@ -31,10 +31,10 @@ $ git clone https://github.com/soskek/bookcorpus.git data/bookcorpus
 ```
 Build wiki and fine-tuning tasks datasets:
 ```
-$ bash scripts/create_datasets.sh
+$ bash scripts/create_datasets.sh --dir data/ --nprocs 4
 ```
-The datasets will be written to `data/` by default, but an optional path can be provided as an argument to the script.
-Downloading the datasets can take many hours.
+To include the BooksCorpus, add `--books`.
+Downloading the BooksCorpus can be buggy and take a long time.
 Formatting and encoding can be made faster by increasing the number of processes used in the script at the cost of more RAM (as much as 10 GB per process).
 This steps will uses a couple hundred GBs of disk space.
 

@@ -60,21 +60,22 @@ class BooksCorpusDownloader(DatasetDownloader):
     def __init__(self, save_path):
         super(BooksCorpusDownloader, self).__init__(save_path, 'bookscorpus')
 
-        self.download_urls = {
-            'https://raw.githubusercontent.com/soskek/bookcorpus/34491bcdf5083ad6b11d5e1b78b618f39a7e0757/download_files.py' : 'download_files.py',
-            'https://raw.githubusercontent.com/soskek/bookcorpus/34491bcdf5083ad6b11d5e1b78b618f39a7e0757/url_list.jsonl' : 'url_list.jsonl'
-        }
-
     def download(self):
-        super(BooksCorpusDownloader, self).download()
-        sys.path.append(self.save_path)
+        bookcorpus_repo = os.path.join(self.save_path, 'bookcorpus')
+        if os.path.exists(bookcorpus_repo):
+            print('[{}] Bookcorpus repository already exists, skipping'.format(
+                    self.name))
+        else:
+            subprocess.run(
+                'git clone https://github.com/soskek/bookcorpus.git {}'.format(
+                bookcorpus_repo), shell=True, check=True)
+
         download_path = os.path.join(self.save_path, 'data')
         print('[{}] Calling download_files.py'.format(self.name))
-        cmd = 'python download_file.py --list {}'.format(
-                os.path.join(self.save_path, 'url_list.jsonl'))
+        cmd = 'python {}/download_files.py --list {}/url_list.jsonl '.format(
+                bookcorpus_repo, bookcorpus_repo)
         cmd += '--out {} --trash-bad-count'.format(download_path)
         subprocess.run(cmd, shell=True, check=True)
-        sys.path.pop()
         
 
 class GLUEDownloader(DatasetDownloader):
@@ -189,7 +190,7 @@ class WeightsDownloader(DatasetDownloader):
             file = self.save_path + '/' + self.model_urls[model][1]
 
             print('[{}] Downloading {}'.format(self.name, url))
-            if os.path.isfile(dst_path):
+            if os.path.isfile(file):
                 print('[{}] ** Download file already exists, skipping '
                       'download and extraction'.format(self.name))
                 continue
