@@ -44,29 +44,29 @@ ENCODED_PATH=$DATA_PATH/encoded
 VOCAB_FILE=data/download/google_pretrained_weights/uncased_L-24_H-1024_A-16/vocab.txt
 
 # Download datasets
-#python bert/download.py --dir $DOWNLOAD_PATH --datasets wikicorpus
-#python bert/download.py --dir $DOWNLOAD_PATH --datasets squad
-#python bert/download.py --dir $DOWNLOAD_PATH --datasets weights
-#if [ "$INCLUDE_BOOKS" == true ]; then
-#    python bert/download.py --dir $DOWNLOAD_PATH --datasets bookscorpus
-#fi
+python bert/download.py --dir $DOWNLOAD_PATH --datasets wikicorpus
+python bert/download.py --dir $DOWNLOAD_PATH --datasets squad
+python bert/download.py --dir $DOWNLOAD_PATH --datasets weights
+if [ "$INCLUDE_BOOKS" == true ]; then
+    python bert/download.py --dir $DOWNLOAD_PATH --datasets bookscorpus
+fi
 
 # Extract articles from wikicorpus xml file into files of 100M each
-#mkdir -p $DOWNLOAD_PATH/wikicorpus/data
-#wikiextractor $DOWNLOAD_PATH/wikicorpus/wikicorpus_en.xml --bytes 100M \
-#    --processes $N_PROCESSES --output $DOWNLOAD_PATH/wikicorpus/data
+mkdir -p $DOWNLOAD_PATH/wikicorpus/data
+wikiextractor $DOWNLOAD_PATH/wikicorpus/wikicorpus_en.xml --bytes 100M \
+    --processes $N_PROCESSES --output $DOWNLOAD_PATH/wikicorpus/data
 
 # Extract the data into text files where each line is a sentence and each
 # article is separated by a blank line. To prevent massive files,
 # articles/books are distributed across shards.
-#python bert/format.py --dataset wikicorpus --processes $N_PROCESSES \
-#    --input_dir $DOWNLOAD_PATH/wikicorpus/data \
-#    --output_dir $FORMAT_PATH/wikicorpus --shards 256
-#if [ "$INCLUDE_BOOKS" == true ]; then
-#    python bert/format.py --dataset bookscorpus --processes $N_PROCESSES \
-#        --input_dir $DOWNLOAD_PATH/bookscorpus/data \
-#        --output_dir $FORMAT_PATH/bookscorpus --shards 256
-#fi
+python bert/format.py --dataset wikicorpus --processes $N_PROCESSES \
+    --input_dir $DOWNLOAD_PATH/wikicorpus/data \
+    --output_dir $FORMAT_PATH/wikicorpus --shards 256
+if [ "$INCLUDE_BOOKS" == true ]; then
+    python bert/format.py --dataset bookscorpus --processes $N_PROCESSES \
+        --input_dir $DOWNLOAD_PATH/bookscorpus/data \
+        --output_dir $FORMAT_PATH/bookscorpus --shards 256
+fi
 
 # NOTE: at this point, the $DOWNLOAD_PATH/wikicorpus and 
 #       $DOWNLOAD_PATH/bookscorpus directories can be deleted to free up space.
