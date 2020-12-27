@@ -22,20 +22,17 @@ $ pip install -v --disable-pip-version-check --no-cache-dir --global-option="--c
 
 ### **2. Build datasets** 
 
-Skip this section if you already have dataset.
+Skip this section if you already have the encoded dataset.
 
-Download dependencies:
+Build WikiCorpus and BooksCorpus for pretraining using pre-downloaded data on Theta and write to `data/`.
 ```
-$ git clone https://github.com/attardi/wikiextractor.git data/wikiextractor && cd data/wikiextractor && git checkout 6408a430fc504a38b04d37ce5e7fc740191dee16 && cd ../..
-$ git clone https://github.com/soskek/bookcorpus.git data/bookcorpus
+$ ./scripts/create_datasets.sh --output data --nproc 8 --format --encode
 ```
-Build wiki and fine-tuning tasks datasets:
-```
-$ bash scripts/create_datasets.sh --dir data/ --nprocs 4
-```
-To include the BooksCorpus, add `--books`.
-Downloading the BooksCorpus can be buggy and take a long time.
-Formatting and encoding can be made faster by increasing the number of processes used in the script at the cost of more RAM (as much as 10 GB per process).
+See `./scripts/create_datasets.sh --help` for all options.
+To download the data from scratch, include the `--download` flag.
+Downloading can take many hours so the script will use pre-downloaded data on Theta when the flag is not present.
+The BooksCorpus servers can easily be overloaded when download from scratch so to skip the BooksCorpus, include the `--no-books` flag.
+Formatting and encoding can be made faster by increasing the number of processes used in the script at the cost of more RAM (as much as 10-15 GB per process).
 This steps will uses a couple hundred GBs of disk space.
 
 ### **3. Training**

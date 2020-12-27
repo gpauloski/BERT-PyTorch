@@ -422,6 +422,8 @@ def main():
     parser.add_argument("--do_lower_case", action='store_true', default=False,
                         help='Whether to lower case the input text. True for '
                              'uncased models, False for cased models.')
+    parser.add_argument("--shards", default=256, type=int,
+                        help='Number of output files to create')
     parser.add_argument('--random_seed', type=int, default=12345,
                         help="random seed for initialization")
     parser.add_argument('--processes', type=int, default=4,
@@ -431,17 +433,28 @@ def main():
     
     overall_start_time = time.time()
 
-    input_files = []
+    input_files = []  # tuple(path, file_size)
     if os.path.isfile(args.input_dir):
-        input_files.append(args.input_dir)
+        input_files.append((args.input_dir, os.path.getsize(args.input_dir)))
     elif os.path.isdir(args.input_dir):
         for path in Path(args.input_dir).rglob('*.txt'):
             if path.is_file():
-                input_files.append(str(path))
+                input_files.append((str(path), os.path.getsize(path)))
     else:
         raise ValueError("{} is not a valid path".format(args.input_file))
 
     print('[encoder] Found {} input files'.format(len(input_files)))
+
+    print('[encoder] Dividing input files across {} shard'.format(args.shards))
+    input_files.sort(key=lambda x: x[1], reverse=True)
+    shards = [[] for _ in range(args.shards)]
+    shard_size = [0] * args.shards
+    # Assigns input files to shards to minimize max sum of file sizes
+    # assigned to any shard
+    for path, size in input_files:
+        min_shard = shard_size.index(min(shard_size))
+        shards[min_shard].append(path)
+        shard_size[min_shard] += size
 
     output_prefix = 'lowercase' if args.do_lower_case else 'uppercase'
     output_prefix += '_seq_len_' + str(args.max_seq_length)
@@ -456,9 +469,9 @@ def main():
         os.makedirs(args.output_dir)
 
     params = []
-    for i, ifile in enumerate(input_files):
+    for i, ifiles in enumerate(shards):
         ofile = os.path.join(args.output_dir, 'train_{}.hdf5'.format(i))
-        params.append(([ifile], ofile, args.random_seed, args.vocab_file,
+        params.append((ifiles, ofile, args.random_seed, args.vocab_file,
                 args.do_lower_case, args.max_seq_length, 
                 args.max_predictions_per_seq, args.short_seq_prob,
                 args.masked_lm_prob, args.dupe_factor))
