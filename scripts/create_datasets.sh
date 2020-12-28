@@ -106,6 +106,10 @@ if [ "$ENCODE" == true ]; then
     # RoBERTa Encoding:
     #   - no next sequence prediction
     #   - only use 512 length sequences
+    #   - A single 100 MB formatted text file takes about 4-5 minutes and 2 GB 
+    #     of RAM to encode
+    #   - The output files are approximately half the size of the input file
+    #     (because the words are encoded from a string to a single int)
     python bert/encode_pretraining_data.py \
         --input_dir $FORMAT_PATH --output_dir $ENCODED_PATH \
         --vocab $VOCAB_FILE --max_seq_len 512 --short_seq_prob 0.1 \
