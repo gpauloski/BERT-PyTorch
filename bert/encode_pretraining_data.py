@@ -1,6 +1,7 @@
 import argparse
 import h5py
 import multiprocessing as mp
+import os
 import random
 import time
 import tokenization
@@ -17,15 +18,21 @@ class TrainingSample(object):
 
         # next sentence: [CLS] sequence tokens [SEP] next sequence tokens [SEP] padding
         # no next sentence: [CLS] sequence tokens [SEP] padding
-        self.sequence = ['CLS']
+        self.sequence = ['[CLS]']
         self.special_token_positions = [0]
         self.sequence.extend(self.seq_tokens)
         if self.next_seq_tokens is not None:
             self.special_token_positions.append(len(self.sequence))
-            self.sequence.append('SEP')
+            self.sequence.append('[SEP]')
             self.sequence.extend(self.next_seq_tokens)
         self.special_token_positions.append(len(self.sequence))
-        self.sequence.append('SEP')
+        self.sequence.append('[SEP]')
+
+    def __repr__(self):
+        s = '(TrainingSample) {} (special_tokens={}, random_next={})'.format(
+                self.sequence, self.special_token_positions,
+                self.is_random_next)
+        return s
 
 
 def get_documents_from_file(input_file):
@@ -41,7 +48,7 @@ def get_documents_from_file(input_file):
             if tokens:
                 documents[-1].append(tokens)
     # Remove empty documents
-    documents = [x for x in documents in x]
+    documents = [x for x in documents if x]
     return documents
 
 
@@ -61,16 +68,21 @@ def create_samples_from_document(document_idx, documents, max_seq_len,
 
     # Randomly reduce max seq length
     if random.random() < short_seq_prob:
-        target_seq_length = rand.randint(2, max_num_tokens)
+        target_seq_length = random.randint(2, max_num_tokens)
     else:
         target_seq_length = max_num_tokens
 
     document = documents[document_idx]
-    while i < len(documents):
+    while i < len(document):
+        current_seq = document[i]
+        # It is possible the current sequence is greater than the allowed
+        # max seq length so we have to clip those sequences
+        if len(current_seq) > target_seq_length:
+            current_seq = current_seq[:target_seq_length]
         # If out of sequences or adding next sequence would put us over target
         # save this chunk as a sample and reset the chunk
-        if (i == len(document) or 
-                chunk_length + len(documents[i]) >= target_seq_length):
+        if len(chunk) >= 1 and (i + 1 == len(document) or 
+                chunk_length + len(current_seq) >= target_seq_length):
             if next_seq_prob > 0:
                 if len(documents) <= 1:
                     raise ValueError('File only contained one document, '
@@ -97,9 +109,9 @@ def create_samples_from_document(document_idx, documents, max_seq_len,
                         rand_idx = random.randint(0, len(documents) - 1)
                     rand_document = documents[rand_idx]
                     rand_start = random.randint(0, len(rand_document) - 1)
-                    max_next_seq_len = target_seq_len - len(seq_tokens)
+                    max_next_seq_len = target_seq_length - len(seq_tokens)
                     for j in range(rand_start, len(rand_document)):
-                        next_seq_tokens.append(rand_document[j])
+                        next_seq_tokens.extend(rand_document[j])
                         if len(next_seq_tokens) >= max_next_seq_len:
                             next_seq_tokens = next_seq_tokens[:max_next_seq_len]
                     # We overwrote some of the last sequences with the random
@@ -110,26 +122,36 @@ def create_samples_from_document(document_idx, documents, max_seq_len,
                     is_random_next = False
             else:
                 seq_tokens = []
-                for j in chunk:
-                    seq_tokens.extend(chunk[j])
+                for seq in chunk:
+                    seq_tokens.extend(seq)
                 next_seq_tokens = None
                 is_random_next = False
-            
+          
+            assert len(seq_tokens) <= target_seq_length
+            if next_seq_tokens is not None:
+                assert (len(next_seq_tokens) + len(seq_tokens) 
+                        <= target_seq_length)
+
             samples.append(
                 TrainingSample(seq_tokens, next_seq_tokens, is_random_next)
             )
             
             # Choose new random target len for next chunk
             if random.random() < short_seq_prob:
-                target_seq_length = rand.randint(2, max_num_tokens)
+                target_seq_length = random.randint(2, max_num_tokens)
             else:
                 target_seq_length = max_num_tokens
             
             chunk = []
             chunk_length = 0
 
-        chunk.append(documents[i])
-        chunk_length += len(documents[i])
+        # We may have reset the chunk and updated the target_seq_length
+        # or changed the index to get the current document again
+        current_seq = document[i]
+        if len(current_seq) > target_seq_length:
+            current_seq = current_seq[:target_seq_length]
+        chunk.append(current_seq)
+        chunk_length += len(current_seq)
         i += 1
 
     return samples
@@ -149,7 +171,7 @@ def create_samples(input_file, tokenizer, max_seq_len, next_seq_prob,
 
 
 def write_samples_to_hdf5(output_file, samples, tokenizer, max_seq_len):
-    inputs = []
+    input_ids = []
     special_token_positions = []
     next_sent_labels = []
     while samples:
@@ -158,10 +180,11 @@ def write_samples_to_hdf5(output_file, samples, tokenizer, max_seq_len):
         input_id = tokenizer.convert_tokens_to_ids(sample.sequence)
         while len(input_id) < max_seq_len:
             input_id.append(0)
+        assert len(input_id) == max_seq_len
         input_ids.append(input_id)
-        special_token_positions(sample.special_token_positions)
-        next_sent_labels.append(1 if sample.is_rand_next else 0)
-
+        special_token_positions.append(sample.special_token_positions)
+        next_sent_labels.append(1 if sample.is_random_next else 0)
+    
     with h5py.File(output_file, 'w') as f:
         f.create_dataset("input_ids", 
                 data=input_ids, dtype='i4', compression='gzip')
@@ -171,14 +194,15 @@ def write_samples_to_hdf5(output_file, samples, tokenizer, max_seq_len):
                 data=next_sent_labels, dtype='i1', compression='gzip')
 
 
-def encode_file(input_file, output_file, tokenizer, max_seq_len, 
+def encode_file(input_file, output_file, tokenizer, max_seq_len,
             next_seq_prob, short_seq_prob):
+    print("[encoder] Creating instances from {}".format(input_file))
     start_time = time.time()
     samples = create_samples(input_file, tokenizer, max_seq_len, next_seq_prob,
             short_seq_prob)
     write_samples_to_hdf5(output_file, samples, tokenizer, max_seq_len)
     print('[encoder] Encoded {} (time={:.0f}s)'.format(
-            output_file, time.time() - start_time))i
+            output_file, time.time() - start_time))
 
 
 if __name__ == '__main__':
@@ -222,12 +246,17 @@ if __name__ == '__main__':
     else:
         raise ValueError("{} is not a valid path".format(args.input_file))
 
+    print('[encoder] Found {} input files'.format(len(input_files)))
+
     output_prefix = 'sequences_'
     output_prefix += 'uppercase' if args.uppercase else 'lowercase'
     output_prefix += '_max_seq_len_' + str(args.max_seq_len)
-    output_prefix += '_next_seq_prob_' + str(args.next_seq_prob)
+    output_prefix += '_next_seq_task_' + str(
+            True if args.next_seq_prob > 0 else False).lower()
 
     args.output_dir = os.path.join(args.output_dir, output_prefix)
+    if not os.path.isdir(args.output_dir):
+        os.makedirs(args.output_dir)
     tokenizer = tokenization.BertTokenizer(args.vocab_file,
             do_lower_case=not args.uppercase, max_len=args.max_seq_len)
 

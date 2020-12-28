@@ -103,19 +103,23 @@ fi
 
 
 if [ "$ENCODE" == true ]; then
-    # This is the standard BERT static masking encoder. Each process can use
-    # around 10 GB of RAM so adjust $N_PROCESSES appropriately.
-    python bert/create_pretraining_data.py \
-        --input_file $FORMAT_PATH/*/*.txt --output_dir $ENCODED_PATH \
-        --vocab $VOCAB_FILE --mL 128 --max_predictions 20 --short_seq_prob 0.1 \
-        --num_cpus $N_PROCESSES
-    #python bert/static_encode_pretraining_data.py \
-    #    --input_dir $FORMAT_PATH --output_dir $ENCODED_PATH --shard 256 \
-    #    --do_lower_case --max_seq_length 128 --max_predictions_per_seq 20 \
-    #    --vocab_file $VOCAB_FILE --processes $N_PROCESSES
-    #python bert/static_encode_pretraining_data.py \
-    #    --input_dir $FORMAT_PATH --output_dir $ENCODED_PATH --shard 256 \
-    #    --do_lower_case --max_seq_length 512 --max_predictions_per_seq 80 \
-    #    --vocab_file $VOCAB_FILE --processes $N_PROCESSES
+    # RoBERTa Encoding:
+    #   - no next sequence prediction
+    #   - only use 512 length sequences
+    python bert/encode_pretraining_data.py \
+        --input_dir $FORMAT_PATH --output_dir $ENCODED_PATH \
+        --vocab $VOCAB_FILE --max_seq_len 512 --short_seq_prob 0.1 \
+        --next_seq_prob 0 --processes $N_PROCESSES
+    # BERT Encoding:
+    #   - next sequence prediction
+    #   - two training phases (128 and 512 length sequences)
+    #python bert/encode_pretraining_data.py \
+    #    --input_dir $FORMAT_PATH --output_dir $ENCODED_PATH \
+    #    --vocab $VOCAB_FILE --max_seq_len 128 --short_seq_prob 0.1 \
+    #    --next_seq_prob 0.5 --processes $N_PROCESSES
+    #python bert/encode_pretraining_data.py \
+    #    --input_dir $FORMAT_PATH --output_dir $ENCODED_PATH \
+    #    --vocab $VOCAB_FILE --max_seq_len 512 --short_seq_prob 0 \
+    #    --next_seq_prob 0.5 --processes $N_PROCESSES
 fi
 
