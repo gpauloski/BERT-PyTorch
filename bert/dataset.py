@@ -1,27 +1,82 @@
-import hdf5
+import h5py
 import numpy as np
 import os
+import threading
 import torch
 
-from concurrent import futures
-
-# DATALOADER SPEC
-#   - read from multple input files
-#   - swap input files in and out of memory
-#   - different workers read differnet input files
-#   - mask on the fly
-#   - save_state_dict
-#   - work with DistributedSample(shuffle=False)
 
 class ShardedPretrainingDataset(torch.utils.data.Dataset):
+    """BERT Pretraining Dataset with Dynamic Masking
 
-    def __init__(self, files, rank=0):
+    BERT Pretraining dataset that supports dynamic masking and multiple input
+    files. In particular, the dataset is designed to load at most two input
+    files into memory at a time. The first file is the file samples are drawn
+    from, and the second file is loaded in a background to be ready for when
+    all samples from the first file are exhausted.
+
+    TODO:
+      - shuffling
+
+    Notes:
+      - __getitem__(idx) should be called with sequential values for idx. This
+        is because we want to avoid constantly loading new files into memory.
+        By using sequential values for idx, we can exhaust all samples in a file
+        that is loaded into memory before moving onto the next file.
+      - For distributed training, use the included DistributedSampler. The 
+        standard PyTorch DistributedSampler does a round-robin partition of
+        indices which would violate calling __getitem__ with sequential index
+        values. The included DistributedSampler chunks the indices between
+        ranks so that the Sampler returns sequential indices and that different
+        workers start on different files.
+      - The first call to __getitem__ will be longer than the average call
+        because the Dataset object does not know which file we are starting with
+        so the file must be inferred from the starting idx and loaded.
+      - For distributed training, calling set_epoch at the start of each epoch
+        is necessary for having different shuffled indices each epoch. If using
+        the DistributedSampler, DistributedSampler.set_epoch() will call this
+        class's set_epoch.
+
+    Input File Format:
+      HDF5 file with keys = ['input_ids', 'special_token_positions', 
+      'next_sentence_labels']. The value for each key is a list with length 
+      num_samples. Each item in input_ids is a list[int] of encoded tokens 
+      padded to max_seq_len with zeros. Each item in special_token_positions
+      is a list[int] of position in the corresponding item in inputs_ids
+      where either a [CLS] or [SEP] token is. The special token positions are
+      used to ensure that a [CLS] or [SEP] token is not masked. Each item
+      if next_sentence_labels is 1 if there are two sequences in input_ids and
+      the second sequence is a random next sequence (i.e. not the actual
+      next sequence that followed in the document) else 0.
+
+    Args:
+      files (list[str]): list of paths to input files
+      mask_token_index (int): Integer value for the '[MASK]' token to replace
+          masked values with in the input.
+      max_pred_per_seq (int): Maximum number of masked tokens per sequence
+      masked_lm_prob (float): Fraction of tokens in input to mask
+      shuffle (bool, optional): Not supported yet (default=False)
+      seed (int, optional): Seed for shuffling (default=0)
+    """
+    def __init__(self, files, mask_token_index, max_pred_per_seq,
+            masked_lm_prob, shuffle=False, seed=0):
         if isinstance(files, str):
             files = [files]
         files.sort()  # Ensure processes see files in same order
-        self.files, self.file_idxs = self._verify_and_count_samples(self.files)
+        self.files, self.file_idxs = self._verify_and_count_samples(files)
 
-        self.pool = futures.ProcessPoolExecutor(1)
+        self.mask_token_index = mask_token_index
+        self.max_pred_per_seq = max_pred_per_seq
+        self.masked_lm_prob = masked_lm_prob
+
+        # TODO: need to shuffle just indices in the rest of the file b/c
+        # two workers could be given separate chunks of one file
+        if not shuffle:
+            raise ValueError('Shuffling the dataset is not supported yet.'
+                             'It is recommended to pre shuffle the samples in '
+                             'the input files.')
+        self.shuffle = shuffle
+        self.seed = seed
+        self.epoch = 0
 
         # We use rank to determine which file should be loaded next so different
         # rank open different files
@@ -32,50 +87,54 @@ class ShardedPretrainingDataset(torch.utils.data.Dataset):
         # than this value
         self.file_sample_end_idx = -1
         self.data = None  # Data for current file
-        self.previous_idx = None  # used to ensure __getitem__ called in order
+
+    def set_epoch(self, epoch):
+        self.epoch = epoch
 
     def __len__(self):
-        return self.n_samples
+        return self.file_idxs[-1][1]
 
     def __getitem__(self, idx):
         if self.data is None:
             # We only enter this once: the first time __getitem__ is called
             # for this instance of the Dataset
-            self.file_idx = self._get_file_idx_from_sample_idx(idx)
-            self.next_file_future = self._async_load_file(self.file_idx)
+            self.next_file_idx = self._get_file_idx_from_sample_idx(idx)
+            self.next_file_thread = self._async_load_file(self.next_file_idx)
 
-        if previous_idx is not None and self.previous_idx + 1 != idx:
-            raise RuntimeError('__getitem__(idx) must be called with '
-                               'sequential indicies')
-        self.previous_idx = idx
-
-        if idx >= self.file_sample_end_idx or self.data is None:
+        if idx >= self.file_sample_end_idx or idx < self.file_sample_start_idx:
             # Done with data for current file so get next data from future
             del self.data  # force clear this memory
-            self.data = self.next_file_future.result(timeout=None)
+            self.next_file_thread.join()
+            self.data = self.next_file_data
             self.file_idx = self.next_file_idx
             self.next_file_idx += 1
-            if self.next_file_idx == len(files):
+            if self.next_file_idx == len(self.files):
                 self.next_file_idx = 0
-            self.next_file_future = self._async_load_file(self.next_file_idx)
+            self.next_file_thread = self._async_load_file(self.next_file_idx)
             self.file_sample_start_idx = self.file_idxs[self.file_idx][0]
             self.file_sample_end_idx = self.file_idxs[self.file_idx][1]
 
         if idx >= self.file_sample_end_idx or idx < self.file_sample_start_idx:
+            # We check the same conditions again since we may have loaded a new
+            # file and want to make sure the correct file was loaded
             raise RuntimeError('idx ({}) out of range ({}, {}) for current '
-                               'file'.format(idx, self.file_sample_start_idx,
-                                             self.file_sample_end_idx))
+                               'file. This can happen when calling __getitem__'
+                               ' with out of order indices (e.g. when using a '
+                               'sampler with shuffle=True).'.format(
+                               idx, self.file_sample_start_idx,
+                               self.file_sample_end_idx))
 
         idx -= self.file_sample_end_idx
         input_ids = self.data['input_ids'][idx]
         special_token_positions = self.data['special_token_positions'][idx]
         next_sentence_label = self.data['next_sentence_labels'][idx]
 
-        # TODO(gpauloski): make these methods
         segment_ids = self._get_segment_ids(input_ids, special_token_positions)
-        input_mask, masked_lm_labels = self._get_mask(...)
+        input_mask = self._get_input_mask(input_ids, special_token_positions)
+        masked_input_ids, masked_lm_labels = self._get_masked_input(
+                input_ids, special_token_positions)
 
-        return [input_ids, segment_ids, input_mask, masked_lm_labels, 
+        return [masked_input_ids, segment_ids, input_mask, masked_lm_labels, 
                 next_sentence_label]
         
     def _get_file_idx_from_sample_idx(self, idx):
@@ -87,19 +146,63 @@ class ShardedPretrainingDataset(torch.utils.data.Dataset):
                 idx, self.__len__()))
 
     def _async_load_file(self, file_idx):
-        """Returns future for process that will load file in background"""
-        return pool.submit(self._dict_from_hdf5, self.files[file_idx])
+        """Returns handle for thread that will load file in background"""
+        th = threading.Thread(target=self._get_dict_from_hdf5, 
+                args=(self.files[file_idx],))
+        th.start()
+        return th
 
-    def _get_dict_from_hdf5(self, file):
+    def _get_dict_from_hdf5(self, filepath):
         """Load HDF5 file and return dict of numpy arrays"""
-        data = {}
-        with h5py.File(file, 'r') as f:
+        self.next_file_data = {}
+        with h5py.File(filepath, 'r') as f:
             for key in f.keys():
-                data[key] = np.asarray(f[key][:])
-        return data
+                self.next_file_data[key] = np.asarray(f[key][:])
+        #return data
 
-    def _get_mask(input_ids, special_token_positions):
-        pass
+    def _get_segment_ids(self, input_ids, special_token_positions):
+        """Get segment ids list
+
+        Examples:
+          Input:  [CLS] seq tokens [SEP] padding
+          Output:   0     0 ... 0    0   0 ... 0
+
+          Input:  [CLS] seq tokens [SEP] seq tokens [SEP] padding
+          Output:   0     0 ... 0    0     1 ... 1    1   0 ... 0
+        """
+        segment_ids = np.zeros_like(input_ids)
+        if len(special_token_positions) == 3:
+            segment_ids[special_token_positions[1] + 1: 
+                    special_token_positions[2] + 1] = 1
+        return segment_ids
+    
+    def _get_input_mask(self, input_ids, special_token_positions):
+        """Get mask of input (to ignore padding)
+
+        Examples:
+          Input:  [CLS] seq tokens [SEP] padding
+          Output:   1     1 ... 1    1   0 ... 0
+
+          Input:  [CLS] seq tokens [SEP] seq tokens [SEP] padding
+          Output:   1     1 ... 1    1     1 ... 1    1   0 ... 0
+        """
+        input_mask = np.zeros_like(input_ids)
+        input_mask[:special_token_positions[-1] + 1] = 1
+        return input_mask
+
+    def _get_masked_input(self, input_ids, special_token_positions):
+        """Randomly mask the input"""
+        masked_lm_labels = np.ones_like(input_ids) * -1
+        # note we get indices up to special_token_positions[-1] b/c
+        # everything after the last special token is padding
+        indices = [i for i in range(special_token_positions[-1]) 
+                if i not in special_token_positions]
+        mask_count = min(self.max_pred_per_seq, 
+                         max(1, int(len(indices) * self.masked_lm_prob)))
+        mask_indices = np.random.choice(indices, mask_count)
+        masked_lm_labels[mask_indices] = input_ids[mask_indices]
+        input_ids[mask_indices] = self.mask_token_index
+        return input_ids, masked_lm_labels
 
     def _verify_and_count_samples(self, files):
         """Check files can be opened, contain correct keys, and count samples
@@ -112,8 +215,8 @@ class ShardedPretrainingDataset(torch.utils.data.Dataset):
             Note file_end_idx is not inclusive
         """
         current_idx = 0
-        files = []
-        file_idxs = []
+        verified_files = []
+        verified_file_idxs = []
         keys = ['input_ids', 'special_token_positions', 'next_sentence_labels']
         for fpath in files:
             if not os.path.isfile(fpath):
@@ -132,11 +235,137 @@ class ShardedPretrainingDataset(torch.utils.data.Dataset):
                 warnings.warn('Number of samples per key in {} '
                               'do not match. Skipping File'.format(fpath))
                 continue
-            files.append(fpath)
+            verified_files.append(fpath)
             last_idx = current_idx + counts[0]
-            file_idxs.append((sample_start, last_idx))
+            verified_file_idxs.append((current_idx, last_idx))
             current_idx = last_idx
         if len(files) == 0:
             raise RuntimeError('Unable to open any valid data files')
-        return files, files_idxs
+        return verified_files, verified_file_idxs
+
+
+class DistributedSampler(torch.utils.data.distributed.DistributedSampler):
+    """Custom Distributed Sampler for ShardedPretrainingDataset
+    
+    The PyTorch DistributedSampler partitions indices in the dataset
+    round-robin across the workers. For a sharded dataset where sample indices
+    are divided across files that are swapped in and out of memory, this
+    will mean all workers access the same files at the same time. This custom
+    DistributedSampler chunks the indices across workers to minimize the
+    number of workers accessing the same file and the number of file swaps
+    required.
+
+    Because we sample indices sequentially, we leave the shuffling to the
+    dataset so that shuffling samples is done among the samples for the open
+    file rather globally for all samples in all files.
+
+    TODO:
+      - save_state_dict so we can resume training from the same spot?
+    """
+    def __init__(self, *args, **kwargs):
+        kwargs['shuffle'] = False
+        super(DistributedSampler, self).__init__(*args, **kwargs)
+        self.dataset.seed = self.seed
+
+    def __iter__(self):
+        indices = list(range(len(self.dataset)))
+
+        if not self.drop_last:
+            # add extra samples to make it evenly divisible
+            padding_size = self.total_size - len(indices)
+            if padding_size <= len(indices):
+                indices += indices[:padding_size]
+            else:
+                indices += (indices * 
+                        math.ceil(padding_size / len(indices)))[:padding_size]
+        else:
+            # remove tail of data to make it evenly divisible.
+            indices = indices[:self.total_size]
+        assert len(indices) == self.total_size
+
+        # subsample
+        indices = indices[self.rank*self.num_samples:(self.rank+1)*self.num_samples]
+        assert len(indices) == self.num_samples
+
+        return iter(indices)
+
+    def set_epoch(self, epoch):
+        self.dataset.set_epoch(epoch)
+
+
+if __name__ == '__main__':
+    import argparse
+    import tqdm
+
+    from pathlib import Path
+
+    parser = argparse.ArgumentParser(description='Dataloader test')
+    parser.add_argument('--input_dir', default=None, type=str,
+                        help='The input data dir containing .hdf5 files '
+                             'for the task.')
+    parser.add_argument('--max_predictions_per_seq', default=80, type=int,
+                        help='The maximum total of masked tokens in input '
+                             'sequence')
+    parser.add_argument('--masked_lm_prob', type=float, default=0.15,
+                        help='Specify the probability for masked lm')
+    parser.add_argument('--batch_size', type=int, default=8,
+                        help='Per worker batch size')
+    parser.add_argument('--epochs', type=int, default=2,
+                        help='Per worker batch size')
+    parser.add_argument('--local_rank', type=int, default=0,
+                        help='Local rank of worker')
+
+    args = parser.parse_args()
+
+    torch.distributed.init_process_group(backend='gloo', init_method='env://')
+    rank = torch.distributed.get_rank()
+
+    input_files = []
+    if os.path.isfile(args.input_dir):
+        input_files.append(args.input_dir)
+    elif os.path.isdir(args.input_dir):
+        for path in Path(args.input_dir).rglob('*.hdf5'):
+            if path.is_file():
+                input_files.append(str(path))
+
+    if rank == 0:
+        print('[rank {}] Found {} input files'.format(rank, len(input_files)))
+
+    dataset = ShardedPretrainingDataset(input_files, -99, 
+            args.max_predictions_per_seq, args.masked_lm_prob)
+    sampler = DistributedSampler(
+            dataset, num_replicas=torch.distributed.get_world_size(), 
+            rank=torch.distributed.get_rank())
+    loader = torch.utils.data.DataLoader(
+            dataset, batch_size=args.batch_size, sampler=sampler,
+            num_workers=4, pin_memory=True)
+    
+    if rank == 0:
+        print('[rank {}] Dataset size = {}'.format(rank, len(dataset)))
+        print('[rank {}] Dataloader size = {}'.format(rank, len(loader)))
+        print('[rank {}] Sampler num_samples = {}'.format(rank, sampler.num_samples))
+        print('[rank {}] Sampler total_size = {}'.format(rank, sampler.total_size))
+        print('[rank {}] Sampler shuffle = {}'.format(rank, sampler.shuffle))
+        #print('[rank {}] Dataset files = {}'.format(rank, dataset.files))
+        #print('[rank {}] Dataset file idxs = {}'.format(rank, dataset.file_idxs))
+
+    count = 0
+    for epoch in range(args.epochs):
+        sampler.set_epoch(epoch)
+        for batch in tqdm.tqdm(loader, disable=rank != 0):
+            #if count % 200 == 0:
+            #    print(rank, dataset.file_idx)
+            count += 1
+            continue
+
+            # print individual sample from batch
+            count += 1
+            if count > 10:
+                break
+            input_ids, segment_ids, input_mask, lm_labels, ns = batch
+            input_ids, segment_ids, input_mask, lm_labels = \
+                    input_ids[0], segment_ids[0], input_mask[0], lm_labels[0]
+            for s in zip(input_ids, segment_ids, input_mask, lm_labels):
+                print([x.item() for x in s])
+            print('\n\n')
 
