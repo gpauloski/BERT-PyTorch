@@ -88,7 +88,6 @@ This command must be run on each node where the `--node_rank` is changed appropr
 After phase 1 training is finished, continue with phase 2 by running the same command with the phase 2 config and data paths (the output directory stays the same).
    
 Training logs are written to `$OUTPUT_DIR/log.txt`, and TensorBoard can be used for monitoring with `tensorboard --logdir=$OUTPUT_DIR`.
-See the [Theta TensorBoard Instructions](https://www.alcf.anl.gov/support-center/theta/tensorboard-instructions) for help using TensorBoard.
 
 #### Automatic Multi-Node Training
 Example scripts for running pretraining on SLURM or Cobalt clusters are provided in `scripts/run_pretraining.{cobalt,slurm}`.
@@ -144,11 +143,15 @@ $ qsub scripts/run_pretraining.cobalt
 ```
 Modify the Cobalt job specifications at the top of the script as needed.
 
+To monitor training with TensorBoard, see the [Theta TensorBoard Instructions](https://www.alcf.anl.gov/support-center/theta/tensorboard-instructions).
+
+
 ## Pretraining Methods
 
 ### Standard BERT Pretraining
 
 ### RoBERTa Pretraining
+
 
 ## Performance
 
