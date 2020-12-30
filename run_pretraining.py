@@ -76,6 +76,7 @@ class BertPretrainingCriterion(torch.nn.Module):
 
     def forward(self, prediction_scores, seq_relationship_score, masked_lm_labels,
                 next_sentence_labels):
+        # TODO should we have a flag for if we are doing next sentence prediction?
         masked_lm_loss = self.loss_fn(prediction_scores.view(-1, self.vocab_size),
                                       masked_lm_labels.view(-1))
         next_sentence_loss = self.loss_fn(seq_relationship_score.view(-1, 2),
@@ -350,7 +351,7 @@ def prepare_dataset(args):
 
     mask_token_id = None
     # TODO: change if we add support for different tokenizers
-    if args.vocab_file is not None and args.vocab_files != '':
+    if args.vocab_file is not None and args.vocab_file != '':
         tokenizer = tokenization.BertTokenizer(args.vocab_file,
                 do_lower_case=not args.uppercase)
         mask_token_id = tokenizer.convert_tokens_to_ids(['[MASK]'])[0]
