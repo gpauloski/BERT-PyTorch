@@ -21,7 +21,7 @@ This repository provides scripts for pretraining and finetuning BERT in PyTorch.
 This repository provides scripts for data downloading, preprocessing, pretraining and finetuning [BERT](https://arxiv.org/abs/1810.04805) (Bidirectional Encoder Representations from Transformers). 
 This implementation is based on the [NVIDIA implementation of BERT](https://github.com/NVIDIA/DeepLearningExamples/tree/master/PyTorch/LanguageModeling/BERT) which is an optimized version of the [Hugging Face](https://huggingface.co/) and [Google](https://github.com/google-research/bert) implementations.
 
-The major differences between the NVIDIA and original (Hugging Face) implementations are [ref](https://github.com/NVIDIA/DeepLearningExamples/tree/master/PyTorch/LanguageModeling/BERT#model-overview):
+The major differences between the NVIDIA and original (Hugging Face) implementations are [[ref](https://github.com/NVIDIA/DeepLearningExamples/tree/master/PyTorch/LanguageModeling/BERT#model-overview)]:
 - Data downloading and preprocesssing scripts
 - Fused [LAMB](https://arxiv.org/pdf/1904.00962.pdf) optimizer for large batch training
 - Fused Adam optimizer for fine tuning
@@ -50,7 +50,7 @@ $ conda env create --file environment.yml --force
 $ conda activate bert-pytorch
 ```
 
-Install NVIDIA APEX. Note this step requires `nvcc` and may fail if done on systems without a GPU (e.g. install APEX on a compute node).
+Install NVIDIA APEX. Note this step requires `nvcc` and may fail if done on systems without a GPU (i.e. install APEX on a compute node).
 ```
 $ git clone https://github.com/NVIDIA/apex
 $ cd apex
@@ -60,7 +60,7 @@ $ pip install -v --disable-pip-version-check --no-cache-dir --global-option="--c
 ### **2. Build datasets** 
 Skip this section if you already have the encoded dataset.
 
-Build WikiCorpus and BooksCorpus for pretraining write to `data/`.
+Build pretraining dataset using Wikipedia and BooksCorpus and save to `data/`.
 ```
 $ ./scripts/create_datasets.sh --output data --nproc 8 --download --format --encode
 ```
@@ -109,8 +109,9 @@ $ pip install -v --disable-pip-version-check --no-cache-dir --global-option="--c
 ```
 
 ### 2. Build dataset
-The provided phase 1 and 2 config files point to premade datasets that are already on Theta so this step cna be skipped.
+The provided phase 1 and 2 config files point to premade datasets that are already on Theta so this step can be skipped.
 If you would like to build the dataset again, you can skip the download and formatted steps (the script will automatically use the downloaded and formatted data on Theta).
+Dataset building can be done on a login node or Theta compute node (not ThetaGPU node because the GPUs will not be used).
 ```
 $ ./scripts/create_datasets.sh --output data --nproc 16 --encode
 ```
