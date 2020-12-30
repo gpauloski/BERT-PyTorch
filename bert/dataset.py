@@ -150,12 +150,11 @@ class ShardedPretrainingDataset(torch.utils.data.Dataset):
                     input_ids, masked_lm_positions, masked_lm_ids)
 
         return [
-            torch.from_numpy(masked_input_ids.astype(np.int64)), 
-            torch.from_numpy(segment_ids.astype(np.int64)), 
-            torch.from_numpy(input_mask.astype(np.int64)), 
-            torch.from_numpy(masked_lm_labels.astype(np.int64)),
-            next_sentence_label
-            #np.asarray(next_sentence_label).astype(int64))
+            masked_input_ids.astype(np.int64),
+            segment_ids.astype(np.int64),
+            input_mask.astype(np.int64),
+            masked_lm_labels.astype(np.int64),
+            np.asarray(next_sentence_label).astype(np.int64)
         ]
         
     def _get_file_idx_from_sample_idx(self, idx):
