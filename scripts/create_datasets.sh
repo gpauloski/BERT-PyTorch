@@ -6,6 +6,7 @@ N_PROCESSES=4
 DOWNLOAD=false
 FORMAT=false
 ENCODE=false
+ENCODE_TYPE="roberta"
 
 while [[ "$1" == -* ]]; do
     case "$1" in
@@ -18,6 +19,7 @@ while [[ "$1" == -* ]]; do
             echo "  --download          Download datasets (default: false)"
             echo "  --format            Format datasets (default: false)"
             echo "  --encode            Encode datasets (default: false)"
+            echo "  --encode-type [str] Encoding type ('roberta' or 'bert')"
             exit 0
         ;;
         -o|--output)
@@ -40,9 +42,13 @@ while [[ "$1" == -* ]]; do
         --encode)
             ENCODE=true
         ;;
+        --encode-type)
+            shift
+            ENCODE_TYPE="$1"
+        ;;
         *)
-          echo "ERROR: unknown parameter \"$1\""
-          exit 1
+            echo "ERROR: unknown parameter \"$1\""
+            exit 1
         ;;
     esac
     shift
@@ -103,27 +109,33 @@ fi
 
 
 if [ "$ENCODE" == true ]; then
-    # RoBERTa Encoding:
-    #   - no next sequence prediction
-    #   - only use 512 length sequences
-    #   - A single 100 MB formatted text file takes about 4-5 minutes and 2 GB 
-    #     of RAM to encode
-    #   - The output files are approximately half the size of the input file
-    #     (because the words are encoded from a string to a single int)
-    python bert/encode_pretraining_data.py \
-        --input_dir $FORMAT_PATH --output_dir $ENCODED_PATH \
-        --vocab $VOCAB_FILE --max_seq_len 512 --short_seq_prob 0.1 \
-        --next_seq_prob 0 --processes $N_PROCESSES
-    # BERT Encoding:
-    #   - next sequence prediction
-    #   - two training phases (128 and 512 length sequences)
-    #python bert/encode_pretraining_data.py \
-    #    --input_dir $FORMAT_PATH --output_dir $ENCODED_PATH \
-    #    --vocab $VOCAB_FILE --max_seq_len 128 --short_seq_prob 0.1 \
-    #    --next_seq_prob 0.5 --processes $N_PROCESSES
-    #python bert/encode_pretraining_data.py \
-    #    --input_dir $FORMAT_PATH --output_dir $ENCODED_PATH \
-    #    --vocab $VOCAB_FILE --max_seq_len 512 --short_seq_prob 0 \
-    #    --next_seq_prob 0.5 --processes $N_PROCESSES
+    if [ "$ENCODE_TYPE" == "roberta" ]; then
+        # RoBERTa Encoding:
+        #   - no next sequence prediction
+        #   - only use 512 length sequences
+        #   - A single 100 MB formatted text file takes about 4-5 minutes and
+        #     2 GB of RAM to encode
+        #   - The output files are approximately half the size of the input
+        #     file (because the words are encoded from a string to a single int)
+        python bert/encode_pretraining_data.py \
+            --input_dir $FORMAT_PATH --output_dir $ENCODED_PATH \
+            --vocab $VOCAB_FILE --max_seq_len 512 --short_seq_prob 0.1 \
+            --next_seq_prob 0 --processes $N_PROCESSES
+    else
+        if [ ! "$ENCODE_TYPE" == "bert" ]; then
+            echo "Error finding encoding type \"$ENCODE_TYPE\" in [\"bert\", \"roberta\"]"
+            exit 1
+        fi
+        # BERT Encoding:
+        #   - next sequence prediction
+        #   - two training phases (128 and 512 length sequences)
+        python bert/encode_pretraining_data.py \
+            --input_dir $FORMAT_PATH --output_dir $ENCODED_PATH \
+            --vocab $VOCAB_FILE --max_seq_len 128 --short_seq_prob 0.1 \
+            --next_seq_prob 0.5 --processes $N_PROCESSES
+        python bert/encode_pretraining_data.py \
+            --input_dir $FORMAT_PATH --output_dir $ENCODED_PATH \
+            --vocab $VOCAB_FILE --max_seq_len 512 --short_seq_prob 0 \
+            --next_seq_prob 0.5 --processes $N_PROCESSES
+    fi
 fi
-
