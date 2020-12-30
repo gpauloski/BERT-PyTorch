@@ -16,6 +16,8 @@ class ShardedPretrainingDataset(torch.utils.data.Dataset):
 
     TODO:
       - shuffling
+      - when masking: 80% of time -> mask, 10% of time -> keep original word,
+        10% of time -> replace with random word
 
     Notes:
       - __getitem__(idx) should be called with sequential values for idx. This
@@ -70,7 +72,7 @@ class ShardedPretrainingDataset(torch.utils.data.Dataset):
 
         # TODO: need to shuffle just indices in the rest of the file b/c
         # two workers could be given separate chunks of one file
-        if not shuffle:
+        if shuffle:
             raise ValueError('Shuffling the dataset is not supported yet.'
                              'It is recommended to pre shuffle the samples in '
                              'the input files.')
@@ -126,16 +128,35 @@ class ShardedPretrainingDataset(torch.utils.data.Dataset):
 
         idx -= self.file_sample_end_idx
         input_ids = self.data['input_ids'][idx]
-        special_token_positions = self.data['special_token_positions'][idx]
         next_sentence_label = self.data['next_sentence_labels'][idx]
 
-        segment_ids = self._get_segment_ids(input_ids, special_token_positions)
-        input_mask = self._get_input_mask(input_ids, special_token_positions)
-        masked_input_ids, masked_lm_labels = self._get_masked_input(
-                input_ids, special_token_positions)
+        if 'special_token_positions' in self.data:
+            special_token_positions = self.data['special_token_positions'][idx]
+            segment_ids = self._get_segment_ids(
+                    input_ids, special_token_positions)
+            input_mask = self._get_input_mask(
+                    input_ids, special_token_positions)
+            masked_input_ids, masked_lm_labels = self._mask_input(
+                    input_ids, special_token_positions)
+        else:
+            # Legacy support for premasked dataset using format from 
+            # NVIDIA/DeepLearningExamples/PyTorch/LanguageModeling/BERT
+            segment_ids = self.data['segment_ids'][idx]
+            input_mask = self.data['input_mask'][idx]
+            masked_lm_positions = self.data['masked_lm_positions'][idx]
+            masked_lm_ids = self.data['masked_lm_ids'][idx]
+            masked_input_ids = input_ids
+            masked_lm_labels = self._get_masked_labels(
+                    input_ids, masked_lm_positions, masked_lm_ids)
 
-        return [masked_input_ids, segment_ids, input_mask, masked_lm_labels, 
-                next_sentence_label]
+        return [
+            torch.from_numpy(masked_input_ids.astype(np.int64)), 
+            torch.from_numpy(segment_ids.astype(np.int64)), 
+            torch.from_numpy(input_mask.astype(np.int64)), 
+            torch.from_numpy(masked_lm_labels.astype(np.int64)),
+            next_sentence_label
+            #np.asarray(next_sentence_label).astype(int64))
+        ]
         
     def _get_file_idx_from_sample_idx(self, idx):
         """Get file idx containing the sample idx"""
@@ -158,7 +179,6 @@ class ShardedPretrainingDataset(torch.utils.data.Dataset):
         with h5py.File(filepath, 'r') as f:
             for key in f.keys():
                 self.next_file_data[key] = np.asarray(f[key][:])
-        #return data
 
     def _get_segment_ids(self, input_ids, special_token_positions):
         """Get segment ids list
@@ -189,8 +209,31 @@ class ShardedPretrainingDataset(torch.utils.data.Dataset):
         input_mask = np.zeros_like(input_ids)
         input_mask[:special_token_positions[-1] + 1] = 1
         return input_mask
+    
+    def _get_masked_labels(self, input_ids, masked_lm_positions, masked_lm_ids):
+        """Get masked labels
 
-    def _get_masked_input(self, input_ids, special_token_positions):
+        Args:
+          input_ids (array)
+          masked_lm_position (array): index in input_ids of masked tokens
+          masked_lm_ids (array): true token value for each position in
+              masked_lm_position.
+
+        Returns:
+          Array with length == len(input_ids) with the true value for
+          each correspoinding masked token in input_ids and -1 for all
+          tokens in input_ids which are not masked.
+        """
+        masked_lm_labels = np.ones_like(input_ids) * -1
+        index = len(input_ids)
+        # store number of  masked tokens in index
+        padded_mask_indices = np.nonzero(masked_lm_positions == 0)
+        if len(padded_mask_indices) != 0:
+            index = padded_mask_indices[0][0]
+        masked_lm_labels[masked_lm_positions[:index]] = masked_lm_ids[:index]
+        return masked_lm_labels
+
+    def _mask_input(self, input_ids, special_token_positions):
         """Randomly mask the input"""
         masked_lm_labels = np.ones_like(input_ids) * -1
         # note we get indices up to special_token_positions[-1] b/c
@@ -217,7 +260,10 @@ class ShardedPretrainingDataset(torch.utils.data.Dataset):
         current_idx = 0
         verified_files = []
         verified_file_idxs = []
-        keys = ['input_ids', 'special_token_positions', 'next_sentence_labels']
+        # Note: there are more keys than just these two in the input files but
+        # we support two kinds of inputs (masked and unmasked) and the
+        # remaining keys are different between the files
+        keys = ['input_ids', 'next_sentence_labels']
         for fpath in files:
             if not os.path.isfile(fpath):
                 warnings.warn('File not found: {}. Skipping File'.format(fpath))
@@ -355,7 +401,7 @@ if __name__ == '__main__':
         for batch in tqdm.tqdm(loader, disable=rank != 0):
             #if count % 200 == 0:
             #    print(rank, dataset.file_idx)
-            count += 1
+            #count += 1
             continue
 
             # print individual sample from batch
