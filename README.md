@@ -90,8 +90,9 @@ After phase 1 training is finished, continue with phase 2 by running the same co
 Training logs are written to `$OUTPUT_DIR/log.txt`, and TensorBoard can be used for monitoring with `tensorboard --logdir=$OUTPUT_DIR`.
 
 #### Automatic Multi-Node Training
-Example scripts for running pretraining on SLURM or Cobalt clusters are provided in `scripts/run_pretraining.{cobalt,slurm}`.
+Example scripts for running pretraining on SLURM or Cobalt clusters are provided in `scripts/run_pretraining.{sbatch,cobalt}`.
 The scripts will automatically infer the distributed training configuration from the nodelist and launch the PyTorch distributed processes.
+The paths and environment setups are examples so you will need to update the scripts for your specific needs.
 
 
 ## ThetaGPU Quickstart
@@ -110,10 +111,10 @@ $ pip install -v --disable-pip-version-check --no-cache-dir --global-option="--c
 
 ### 2. Build dataset
 The provided phase 1 and 2 config files point to premade datasets that are already on Theta so this step can be skipped.
-If you would like to build the dataset again, you can skip the download and formatted steps (the script will automatically use the downloaded and formatted data on Theta).
+If you would like to build the dataset again, you can skip the download step (the script will automatically use the downloaded data on Theta).
 Dataset building can be done on a login node or Theta compute node (not ThetaGPU node because the GPUs will not be used).
 ```
-$ ./scripts/create_datasets.sh --output data --nproc 16 --encode
+$ ./scripts/create_datasets.sh --output data --nproc 16 --format --encode
 ```
 
 ### 3. Training
@@ -161,3 +162,8 @@ To monitor training with TensorBoard, see the [Theta TensorBoard Instructions](h
 ### Finetuning
 
 
+## TODO
+
+- [ ] Benchmarking performance for README
+- [ ] Add option to limit maximum file size for `format.py` instead of choosing `n_shard`.
+- [ ] Go through TODOs in repo
