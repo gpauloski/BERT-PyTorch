@@ -1,6 +1,6 @@
 #!/bin/bash
-#COBALT -t 10 
-#COBALT -n 2
+#COBALT -t 720 
+#COBALT -n 1
 #COBALT -q full-node
 #COBALT -A SuperBERT
 #COBALT -O cobalt_logs/job
@@ -17,7 +17,8 @@ else
 	DATA=/lus/theta-fs0/projects/SuperBERT/datasets/wikicorpus_en/phase2
 fi
 
-OUTPUT_DIR=results/bert_pretraining
+VOCAB_FILE=/lus/theta-fs0/projects/SuperBERT/datasets/download/google_pretrained_weights/uncased_L-24_H-1024_A-16/vocab.txt
+OUTPUT_DIR=results/bert_no_kfac_pretraining
 
 MASTER_RANK=$(head -n 1 $COBALT_NODEFILE)
 RANKS=$(tr '\n' ' ' < $COBALT_NODEFILE)
@@ -27,17 +28,24 @@ NGPUS=8
 # Launch the pytorch processes on each worker in NODEFILE
 # Note we need to activate conda on the node as well
 RANK=0
-for NODE in $RANKS; do
-	echo "Launching rank=$RANK, node=$NODE"
-	if [[ "$RANK" -eq 0 ]]; then
-		./scripts/launch_pretraining.sh \
-			--ngpus $NGPUS --nnodes $NNODES --master $MASTER_RANK \
-			--rank $RANK --config $CONFIG --input $DATA --output $OUTPUT_DIR &
-	else
-		ssh $NODE "cd $PWD; ./scripts/launch_pretraining.sh --ngpus $NGPUS --nnodes $NNODES --master $MASTER_RANK --rank $RANK --config $CONFIG --input $DATA --output $OUTPUT_DIR" &
-	fi
-	RANK=$((RANK+1))
-done
+if [[ "$NNODES" -eq 1 ]]; then
+    python -m torch.distributed.launch --nproc_per_node=$NGPUS \
+        run_pretraining.py --config_file $CONFIG --input_dir=$DATA \
+            --output_dir $OUTPUT_DIR --vocab_file $VOCAB_FILE
+else
+    for NODE in $RANKS; do
+    	echo "Launching rank=$RANK, node=$NODE"
+    	if [[ "$RANK" -eq 0 ]]; then
+    		./scripts/launch_pretraining.sh \
+    			--ngpus $NGPUS --nnodes $NNODES --master $MASTER_RANK \
+    			--rank $RANK --config $CONFIG --input $DATA --output $OUTPUT_DIR \
+                --vocab $VOCAB_FILE &
+    	else
+            ssh $NODE "cd $PWD; ./scripts/launch_pretraining.sh --ngpus $NGPUS --nnodes $NNODES --master $MASTER_RANK --rank $RANK --config $CONFIG --input $DATA --output $OUTPUT_DIR --vocab $VOCAB_FILE" &
+    	fi
+    	RANK=$((RANK+1))
+    done
+fi
 
 wait
 

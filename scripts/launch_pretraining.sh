@@ -7,6 +7,7 @@ MASTER=""
 CONFIG=""
 INPUT=""
 OUTPUT=""
+VOCAB=""
 
 while [ "$1" != "" ]; do
     PARAM=`echo $1 | awk -F= '{print $1}'`
@@ -26,6 +27,7 @@ while [ "$1" != "" ]; do
             echo "  -c,--config [path]  Config file for training (default: \"\")"
             echo "  -i,--input  [path]  Input data directory (default: \"\")"
             echo "  -o,--output [path]  Output data directoy (default: \"\")"
+            echo "  -v,--vocab  [path]  Vocab file (default: \"\")"
             exit 0
         ;;
         -N|--ngpus)
@@ -48,6 +50,9 @@ while [ "$1" != "" ]; do
         ;;
         -o|--output)
             OUTPUT=$VALUE
+        ;;
+        -v|--vocab)
+            VOCAB=$VALUE
         ;;
         *)
           echo "ERROR: unknown parameter \"$PARAM\""
@@ -75,6 +80,8 @@ echo Launching torch.distributed: nproc_per_node=$NGPUS, nnodes=$NNODES, master_
 
 
 python -m torch.distributed.launch \
-    --nproc_per_node=$NGPUS --nnodes=$NNODES --node_rank=$LOCAL_RANK --master_addr=$MASTER \
-    run_pretraining.py --config_file=$CONFIG --input_dir=$INPUT --output_dir $OUTPUT
+    --nproc_per_node=$NGPUS --nnodes=$NNODES \
+    --node_rank=$LOCAL_RANK --master_addr=$MASTER \
+    run_pretraining.py --config_file=$CONFIG --input_dir=$INPUT \
+         --output_dir $OUTPUT --vocab_file $VOCAB
 
