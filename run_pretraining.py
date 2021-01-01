@@ -16,12 +16,7 @@
 
 """BERT pretraining runner."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import argparse
-import h5py
 import json
 import loggerplus as logger
 import math
@@ -69,20 +64,21 @@ signal.signal(signal.SIGTERM, signal_handler)
 
 
 class BertPretrainingCriterion(torch.nn.Module):
-    def __init__(self, vocab_size):
+    def __init__(self, vocab_size, ignore_next_sentence=False):
         super(BertPretrainingCriterion, self).__init__()
         self.loss_fn = torch.nn.CrossEntropyLoss(ignore_index=-1)
         self.vocab_size = vocab_size
+        self.ignore_next_sentence=ignore_next_sentence
 
     def forward(self, prediction_scores, seq_relationship_score, masked_lm_labels,
                 next_sentence_labels):
-        # TODO should we have a flag for if we are doing next sentence prediction?
         masked_lm_loss = self.loss_fn(prediction_scores.view(-1, self.vocab_size),
                                       masked_lm_labels.view(-1))
-        next_sentence_loss = self.loss_fn(seq_relationship_score.view(-1, 2),
-                                          next_sentence_labels.view(-1))
-        total_loss = masked_lm_loss + next_sentence_loss
-        return total_loss
+        if not self.ignore_next_sentence:
+            next_sentence_loss = self.loss_fn(seq_relationship_score.view(-1, 2),
+                                              next_sentence_labels.view(-1))
+            return masked_lm_loss + next_sentence_loss
+        return masked_lm_loss
 
 
 def parse_arguments():
@@ -124,6 +120,8 @@ def parse_arguments():
                         help="random seed for initialization")
     parser.add_argument('--fp16', default=False, action='store_true',
                         help="Use PyTorch AMP training")
+    parser.add_argument('--ignore_next_sentence', default=False, action='store_true',
+                        help="Skip next sentence prediction tasks in loss")
 
     ## Hyperparameters
     parser.add_argument("--learning_rate", default=5e-5, type=float,
@@ -149,7 +147,7 @@ def parse_arguments():
                         help='iters between kfac cov ops')
     parser.add_argument('--kfac_stat_decay', type=float, default=0.95,
                         help='Alpha value for covariance accumulation')
-    parser.add_argument('--kfac_damping', type=float, default=0.003,
+    parser.add_argument('--kfac_damping', type=float, default=0.001,
                         help='KFAC damping factor')
     parser.add_argument('--kfac_kl_clip', type=float, default=0.001,
                         help='KFAC KL gradient clip')
@@ -191,8 +189,8 @@ def setup_training(args):
                                overwrite=False, verbose=is_main_process()),
             logger.TorchTensorboardHandler(args.output_dir,
                                            verbose=is_main_process()),
-            #logger.CSVHandler(os.path.join(args.output_dir, 'metrics.csv'),
-            #                   overwrite=False),
+            logger.CSVHandler(os.path.join(args.output_dir, 'metrics.csv'),
+                               overwrite=False),
         ]
     )
 
@@ -317,9 +315,6 @@ def prepare_optimizers(args, model, checkpoint, global_step):
         )
         lr_schedulers.append(lrs)
 
-        if is_main_process():
-            logger.info(preconditioner)
-
     if checkpoint is not None:
         if args.resume_step >= args.previous_phase_end_step:
             keys = list(checkpoint['optimizer']['state'].keys())
@@ -336,6 +331,9 @@ def prepare_optimizers(args, model, checkpoint, global_step):
                 checkpoint['preconditioner'] is not None and
                 preconditioner is not None):
             preconditioner.load_state_dict(checkpoint['preconditioner'])
+
+    if args.kfac and is_main_process():
+        logger.info(preconditioner)
 
     return optimizer, preconditioner, lr_schedulers, scaler
 
@@ -438,7 +436,9 @@ def main(args):
     most_recent_ckpts_paths = []
     average_loss = 0.0
     epoch = 0
-    training_steps = 0
+    # Note: Start at training step 1 so that training_step % accummulation_steps
+    #       != 0 on first foward/backward pass.
+    training_steps = 1
     train_time_start = time.time()
 
     # Note: We loop infinitely over epochs, termination is handled via iteration count
@@ -449,8 +449,6 @@ def main(args):
             train_iter = dataloader
 
         for batch in train_iter:
-            # TODO Should we start at 0 so % accumulation_steps is always true
-            # on first iteration?
             training_steps += 1
 
             batch = [t.to(args.device) for t in batch]
