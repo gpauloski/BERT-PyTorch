@@ -14,7 +14,7 @@ while [[ "$1" == -* ]]; do
             echo "USAGE: ./scripts/create_datasets.sh"
             echo "  -h,--help           Display this help message"
             echo "  -o,--output [path]  Output directory (default: data/)"
-            echo "  -p,--nproc  [int]   Number of processes (default: 4)"
+            echo "  -p,--nproc [int]    Number of processes (default: 4)"
             echo "  --no-books          Skip Bookscorpus (default: false)"
             echo "  --download          Download datasets (default: false)"
             echo "  --format            Format datasets (default: false)"
@@ -114,13 +114,14 @@ if [ "$ENCODE" == true ]; then
         #   - no next sequence prediction
         #   - only use 512 length sequences
         #   - A single 100 MB formatted text file takes about 4-5 minutes and
-        #     2 GB of RAM to encode
+        #     1.5-2 GB of RAM to encode. The entire Wiki+BooksCorpus takes 2-3
+        #     hours to encode using 16 threads.
         #   - The output files are approximately half the size of the input
         #     file (because the words are encoded from a string to a single int)
         python bert/encode_pretraining_data.py \
             --input_dir $FORMAT_PATH --output_dir $ENCODED_PATH \
             --vocab $VOCAB_FILE --max_seq_len 512 --short_seq_prob 0.1 \
-            --next_seq_prob 0 --processes $N_PROCESSES
+            --next_seq_prob 0.0 --processes $N_PROCESSES
     else
         if [ ! "$ENCODE_TYPE" == "bert" ]; then
             echo "Error finding encoding type \"$ENCODE_TYPE\" in [\"bert\", \"roberta\"]"
