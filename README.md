@@ -46,7 +46,7 @@ The major differences between this version and the NVIDIA implementation are:
 
 ### **1. Build conda environment**
 ```
-$ conda env create --file environment.yml --force
+$ conda env create --file environment.yml
 $ conda activate bert-pytorch
 ```
 
@@ -72,11 +72,19 @@ This steps will use a couple hundred GBs of disk space; however the `download` d
 ### **3. Training**
 Arguments to `run_pretraining.py` can be passed as command line arguments or as key-value pairs in the config files.
 The values in the config file take precedent over the command line arguments.
+See `python run_pretraining.py --help` for a full list of arguments.
 
 #### Single-Node Multi-GPU Training
 ```
 $ python -m torch.distributed.launch --nproc_per_node=$GPUS_PER_NODE run_pretraining.py --config_file $PHASE1_CONFIG --input_dir=$PHASE1_DATA --output_dir $OUTPUT_DIR
 ```
+An example `$PHASE1_CONFIG` is provided in `config/bert_pretraining_phase1_config.json`.
+The example configs are tuned for 40GB NVIDIA A100s.
+The training script will recursively find and use all HDF5 files in `$PHASE1_DATA`.
+Training logs and checkpoints are written to `$OUTPUT_DIR`.
+After phase 1 training is finished, continue with phase 2 by running the same command with the phase 2 config and data paths (the output directory stays the same).
+   
+Training logs are written to `$OUTPUT_DIR/log.txt`, and TensorBoard can be used for monitoring with `tensorboard --logdir=$OUTPUT_DIR`.
 
 #### Multi-Node Multi-GPU Training
 ```
@@ -84,10 +92,6 @@ $ python -m torch.distributed.launch --node_rank=$RANK --master_addr=$MASTER --n
 ```
 This command must be run on each node where the `--node_rank` is changed appropriately.
 `$MASTER` is the hostname of the first node (e.g. thetagpu08).
-
-After phase 1 training is finished, continue with phase 2 by running the same command with the phase 2 config and data paths (the output directory stays the same).
-   
-Training logs are written to `$OUTPUT_DIR/log.txt`, and TensorBoard can be used for monitoring with `tensorboard --logdir=$OUTPUT_DIR`.
 
 #### Automatic Multi-Node Training
 Example scripts for running pretraining on SLURM or Cobalt clusters are provided in `scripts/run_pretraining.{sbatch,cobalt}`.
@@ -102,7 +106,7 @@ For members of this project only (you will not have access to the premade datase
 ### 1. Build conda environment
 Perform this step in an interactive session on a compute node: `qsub -A $PROJECT_NAME -I -q full-node -n $NODE_COUNT -t $TIME`.
 ```
-$ conda env create --file environment.yml --force
+$ conda env create --file environment.yml
 $ conda activate bert-pytorch
 $ git clone https://github.com/NVIDIA/apex
 $ cd apex
