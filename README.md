@@ -71,8 +71,8 @@ This steps will use a couple hundred GBs of disk space; however the `download` d
 
 ### **3. Training**
 Arguments to `run_pretraining.py` can be passed as command line arguments or as key-value pairs in the config files.
-The values in the config file take precedent over the command line arguments.
-See `python run_pretraining.py --help` for a full list of arguments.
+Command line arguments take precendence over config file arguments.
+See `python run_pretraining.py --help` for a full list of arguments and their defaults.
 
 #### Single-Node Multi-GPU Training
 ```
@@ -171,3 +171,4 @@ To monitor training with TensorBoard, see the [Theta TensorBoard Instructions](h
 - [ ] Benchmarking performance for README
 - [ ] Add option to limit maximum file size for `format.py` instead of choosing `n_shard`.
 - [ ] Go through TODOs in repo
+- [ ] Add byte-pair encoding option

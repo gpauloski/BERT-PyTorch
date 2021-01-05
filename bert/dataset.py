@@ -15,9 +15,16 @@ class ShardedPretrainingDataset(torch.utils.data.Dataset):
     all samples from the first file are exhausted.
 
     TODO:
-      - shuffling
-      - when masking: 80% of time -> mask, 10% of time -> keep original word,
-        10% of time -> replace with random word
+      - Shuffling (we leave shuffling to the dataset creating for now).
+        Shuffling poses a slight problem because we can only shuffle indices
+        within the current file (otherwise the sample index would jump across
+        files) and multiple ranks could be working on a separate chunk of the
+        same file. Thus, we would have to only shuffle within the open file
+        and subset of indices assigned to this rank which would take
+        coordination with the Distributed Sampler.
+      - If torch distributed is initialized and world size > 1, just scan
+        input files on rank 0 and broadcast file start/end indices to all other
+        ranks to prevent every rank from opening files at same time
 
     Notes:
       - __getitem__(idx) should be called with sequential values for idx. This
@@ -56,11 +63,45 @@ class ShardedPretrainingDataset(torch.utils.data.Dataset):
           masked values with in the input.
       max_pred_per_seq (int): Maximum number of masked tokens per sequence
       masked_lm_prob (float): Fraction of tokens in input to mask
+      vocab_size (int): Number of tokens in vocab. Used to sample random
+          tokens when masking
+      original_token_prob (float, optional): Probability to keep original token
+          rather than masking (default: 0.1)
+      random_token_prob (float, optional): Probability to replace with random
+          token rather than masking (default: 0.1)
       shuffle (bool, optional): Not supported yet (default=False)
-      seed (int, optional): Seed for shuffling (default=0)
+      seed (int, optional): Seed for shuffling and random masking (default=None)
     """
-    def __init__(self, files, mask_token_index, max_pred_per_seq,
-            masked_lm_prob, shuffle=False, seed=0):
+    def __init__(self,
+                 files,
+                 mask_token_index,
+                 max_pred_per_seq,
+                 masked_lm_prob,
+                 vocab_size,
+                 original_token_prob=0.1,
+                 random_token_prob=0.1,
+                 shuffle=False,
+                 seed=None):
+
+        if not isinstance(mask_token_index, int) and mask_token_index is not None:
+            raise ValueError('mask_token_index must be an integer')
+        if not isinstance(max_pred_per_seq, int) or max_pred_per_seq < 0:
+            raise ValueError('max_pred_per_seq must be an integer >= 0')
+        if masked_lm_prob < 0 or masked_lm_prob > 1:
+            raise ValueError('masked_lm_prob must be in [0,1]')
+        if not isinstance(vocab_size, int) or vocab_size < 0:
+            raise ValueError('vocab_size must be an integer >= 0')
+        if original_token_prob < 0 or original_token_prob > 1:
+            raise ValueError('original_token_prob must be in [0,1]')
+        if random_token_prob < 0 or random_token_prob > 1:
+            raise ValueError('random_token_prob must be in [0,1]')
+        if random_token_prob + original_token_prob > 1:
+            raise ValueError('random_token_prob + original_token_prob > 1')
+        if shuffle:
+            raise ValueError('Shuffling the dataset is not supported yet.'
+                             'It is recommended to pre shuffle the samples in '
+                             'the input files.')
+
         if isinstance(files, str):
             files = [files]
         files.sort()  # Ensure processes see files in same order
@@ -69,16 +110,16 @@ class ShardedPretrainingDataset(torch.utils.data.Dataset):
         self.mask_token_index = mask_token_index
         self.max_pred_per_seq = max_pred_per_seq
         self.masked_lm_prob = masked_lm_prob
+        self.vocab_size = vocab_size
+        self.original_token_prob = original_token_prob
+        self.random_token_prob = random_token_prob
 
-        # TODO: need to shuffle just indices in the rest of the file b/c
-        # two workers could be given separate chunks of one file
-        if shuffle:
-            raise ValueError('Shuffling the dataset is not supported yet.'
-                             'It is recommended to pre shuffle the samples in '
-                             'the input files.')
         self.shuffle = shuffle
         self.seed = seed
         self.epoch = 0
+
+        if self.seed is not None:
+            np.random.seed(self.seed)
 
         # We use rank to determine which file should be loaded next so different
         # rank open different files
@@ -243,7 +284,14 @@ class ShardedPretrainingDataset(torch.utils.data.Dataset):
                          max(1, int(len(indices) * self.masked_lm_prob)))
         mask_indices = np.random.choice(indices, mask_count)
         masked_lm_labels[mask_indices] = input_ids[mask_indices]
-        input_ids[mask_indices] = self.mask_token_index
+        for idx in mask_indices:
+            rng = np.random.rand()
+            if rng < self.original_token_prob:
+                continue
+            elif rng < self.original_token_prob + self.random_token_prob:
+                input_ids[idx] = np.random.randint(0, self.vocab_size - 1)
+            else:
+                input_ids[idx] = self.mask_token_index
         return input_ids, masked_lm_labels
 
     def _verify_and_count_samples(self, files):
@@ -304,15 +352,17 @@ class DistributedSampler(torch.utils.data.distributed.DistributedSampler):
     dataset so that shuffling samples is done among the samples for the open
     file rather globally for all samples in all files.
 
-    TODO:
-      - save_state_dict so we can resume training from the same spot?
+    Note: Standard PyTorch samplers create and return an iteration whereas
+    this class is itself an iteration. This allows us to save the sampler
+    to the state_dict and load state_dict to resume training from the same
+    sample.
     """
     def __init__(self, *args, **kwargs):
         kwargs['shuffle'] = False
         super(DistributedSampler, self).__init__(*args, **kwargs)
         self.dataset.seed = self.seed
-
-    def __iter__(self):
+        
+        # This sampler is deterministic so we can get list of indices once
         indices = list(range(len(self.dataset)))
 
         if not self.drop_last:
@@ -328,11 +378,48 @@ class DistributedSampler(torch.utils.data.distributed.DistributedSampler):
             indices = indices[:self.total_size]
         assert len(indices) == self.total_size
 
-        # subsample
-        indices = indices[self.rank*self.num_samples:(self.rank+1)*self.num_samples]
-        assert len(indices) == self.num_samples
+        self.global_indices = indices
+        self.index = 0
 
-        return iter(indices)
+    def __len__(self):
+        return self.num_samples
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        if self.index == self.num_samples:
+            self.index = 0
+            raise StopIteration()
+        else:
+            # Add offset for current rank
+            x = self.global_indices[self.index + self.rank * self.num_samples]
+            self.index += 1
+            return x
+
+    def state_dict(self):
+        return {
+            'epoch': self.epoch,
+            'seed': self.seed,
+            'num_replicas': self.num_replicas,
+            'total_size': self.total_size,
+            'index': self.index
+        }
+
+    def load_state_dict(self, state_dict):
+        if state_dict['total_size'] != self.total_size:
+            warnings.warn('The number of samples in the Sampler has changed. '
+                          'Did the dataset or sampler parameters change? '
+                          'Skipping restoring sampler state.')
+            return
+        if state_dict['num_replicas'] != self.num_replicas:
+            warnings.warn('The number of replicas has changed so the resume '
+                          'index from the sampler is no longer valid. '
+                          'Skipping restoring sampler state.')
+            return
+        self.epoch = state_dict['epoch']
+        self.seed = state_dict['seed']
+        self.index = state_dict['index']
 
     def set_epoch(self, epoch):
         self.dataset.set_epoch(epoch)
@@ -377,7 +464,7 @@ if __name__ == '__main__':
         print('[rank {}] Found {} input files'.format(rank, len(input_files)))
 
     dataset = ShardedPretrainingDataset(input_files, -99, 
-            args.max_predictions_per_seq, args.masked_lm_prob)
+            args.max_predictions_per_seq, args.masked_lm_prob, vocab_size=30000)
     sampler = DistributedSampler(
             dataset, num_replicas=torch.distributed.get_world_size(), 
             rank=torch.distributed.get_rank())

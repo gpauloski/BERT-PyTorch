@@ -41,7 +41,7 @@ import bert.modeling as modeling
 import bert.tokenization as tokenization
 
 from bert.dataset import ShardedPretrainingDataset, DistributedSampler
-from bert.schedulers import PolyWarmUpScheduler
+from bert.schedulers import PolyWarmUpScheduler, LinearWarmUpScheduler
 from bert.utils import is_main_process, get_world_size, get_rank
 
 try:
@@ -126,6 +126,9 @@ def parse_arguments():
     ## Hyperparameters
     parser.add_argument("--learning_rate", default=5e-5, type=float,
                         help="The initial learning rate.")
+    parser.add_argument("--lr_decay", default='poly', type=str,
+                        choices=['poly', 'linear'],
+                        help="Learning rate decay type.")
     parser.add_argument("--warmup_proportion", default=0.01, type=float,
                         help="Proportion of training to perform linear learning rate "
                              "warmup for. E.g., 0.1 = 10%% of training.")
@@ -162,11 +165,19 @@ def parse_arguments():
 
     args = parser.parse_args()
 
+    # Hacky way to figure out to distinguish arguments that were found
+    # in sys.argv[1:]
+    aux_parser = argparse.ArgumentParser(argument_default=argparse.SUPPRESS)
+    for arg in vars(args):
+        aux_parser.add_argument('--' + arg)
+    cli_args, _ = aux_parser.parse_known_args()
+
+    # Argument precedent: cli_args > config_file > argparse defaults
     if args.config_file is not None:
         with open(args.config_file) as jf:
             configs = json.load(jf)
         for key in configs:
-            if key in vars(args):
+            if key in vars(args) and key not in vars(cli_args):
                 setattr(args, key, configs[key])
 
     return args
@@ -232,7 +243,7 @@ def prepare_model(args):
     model = modeling.BertForPreTraining(config)
 
     checkpoint = None
-    global_step = 0
+    global_steps = 0
     args.resume_step = 0
     checkpoint_names = [f for f in os.listdir(args.output_dir) if f.endswith(".pt")]
     if len(checkpoint_names) > 0:
@@ -250,7 +261,7 @@ def prepare_model(args):
             raise ValueError('previous_phase_end_step={} cannot be larger '
                              'than resume_step={}'.format(
                              args.previous_phase_end_step, args.resume_step))
-        global_step = args.resume_step - args.previous_phase_end_step
+        global_steps = args.resume_step - args.previous_phase_end_step
         
         logger.info('Resume from step {} checkpoint'.format(args.resume_step))
 
@@ -261,10 +272,10 @@ def prepare_model(args):
 
     criterion = BertPretrainingCriterion(config.vocab_size)
 
-    return model, checkpoint, global_step, criterion, args
+    return model, checkpoint, global_steps, criterion, args
 
 
-def prepare_optimizers(args, model, checkpoint, global_step):
+def prepare_optimizers(args, model, checkpoint, global_steps):
     param_optimizer = list(model.named_parameters())
     no_decay = ['bias', 'gamma', 'beta', 'LayerNorm']
 
@@ -275,15 +286,36 @@ def prepare_optimizers(args, model, checkpoint, global_step):
          'weight_decay': 0.0}
     ]
 
+    if args.lr_decay == 'poly':
+        Scheduler = PolyWarmUpScheduler
+    elif args.lr_decay == 'linear':
+        Scheduler = LinearWarmUpScheduler
+    else:
+        raise ValueError('Unknown lr decay "{}"'.format(args.lr_decay))
+
     optimizer = FusedLAMB(optimizer_grouped_parameters,
                           lr=args.learning_rate)
-    lr_schedulers = [PolyWarmUpScheduler(optimizer,
-                                         warmup=args.warmup_proportion,
-                                         total_steps=args.max_steps)]
+    lr_schedulers = [Scheduler(optimizer, warmup=args.warmup_proportion,
+            total_steps=args.max_steps)]
+    
+    if checkpoint is not None:
+        if args.resume_step >= args.previous_phase_end_step:
+            keys = list(checkpoint['optimizer']['state'].keys())
+            # Override hyperparameters from previous checkpoint
+            for key in keys:
+                checkpoint['optimizer']['state'][key]['step'] = global_steps
+            for i, item in enumerate(checkpoint['optimizer']['param_groups']):
+                checkpoint['optimizer']['param_groups'][i]['step'] = global_steps
+                checkpoint['optimizer']['param_groups'][i]['t_total'] = args.max_steps
+                checkpoint['optimizer']['param_groups'][i]['warmup'] = args.warmup_proportion
+                checkpoint['optimizer']['param_groups'][i]['lr'] = args.learning_rate
+        optimizer.load_state_dict(checkpoint['optimizer'])
 
     scaler = None
     if args.fp16:
         scaler = GradScaler()
+        if checkpoint is not None and 'scaler' in checkpoint:
+            scaler.load_state_dict(checkpoint['scaler'])
 
     preconditioner = None
     if args.kfac:
@@ -304,41 +336,26 @@ def prepare_optimizers(args, model, checkpoint, global_step):
             # Compute the factors and update the running averages during the
             # forward backward pass b/c we are using grad accumulation but
             # not accumulating the input/output data
+            accumulate_data=False,
             compute_factor_in_hook=True,
             distribute_layer_factors=False,
             grad_scaler=scaler,
         )
-        lrs = PolyWarmUpScheduler(
-            preconditioner, 
-            warmup=args.warmup_proportion, 
-            total_steps=args.max_steps
-        )
+
+        lrs = Scheduler(preconditioner, warmup=args.warmup_proportion, 
+                total_steps=args.max_steps)
         lr_schedulers.append(lrs)
 
-    if checkpoint is not None:
-        if args.resume_step >= args.previous_phase_end_step:
-            keys = list(checkpoint['optimizer']['state'].keys())
-            # Override hyperparameters from previous checkpoint
-            for key in keys:
-                checkpoint['optimizer']['state'][key]['step'] = global_step
-            for iter, item in enumerate(checkpoint['optimizer']['param_groups']):
-                checkpoint['optimizer']['param_groups'][iter]['step'] = global_step
-                checkpoint['optimizer']['param_groups'][iter]['t_total'] = args.max_steps
-                checkpoint['optimizer']['param_groups'][iter]['warmup'] = args.warmup_proportion
-                checkpoint['optimizer']['param_groups'][iter]['lr'] = args.learning_rate
-        optimizer.load_state_dict(checkpoint['optimizer'])
-        if ('preconditioner' in checkpoint and
-                checkpoint['preconditioner'] is not None and
-                preconditioner is not None):
+        if checkpoint is not None and 'preconditioner' in checkpoint:
             preconditioner.load_state_dict(checkpoint['preconditioner'])
 
-    if args.kfac and is_main_process():
-        logger.info(preconditioner)
+        if is_main_process():
+            logger.info(preconditioner)
 
     return optimizer, preconditioner, lr_schedulers, scaler
 
 
-def prepare_dataset(args):
+def prepare_dataset(args, checkpoint):
     input_files = []
     if os.path.isfile(args.input_dir):
         input_files.append(args.input_dir)
@@ -346,6 +363,9 @@ def prepare_dataset(args):
         for path in Path(args.input_dir).rglob('*.hdf5'):
             if path.is_file():
                 input_files.append(str(path))
+
+    with open(args.model_config_file) as f:
+        vocab_size = json.load(f)['vocab_size']
 
     mask_token_id = None
     # TODO: change if we add support for different tokenizers
@@ -355,15 +375,22 @@ def prepare_dataset(args):
         mask_token_id = tokenizer.convert_tokens_to_ids(['[MASK]'])[0]
 
     dataset = ShardedPretrainingDataset(input_files, mask_token_id, 
-            args.max_predictions_per_seq, args.masked_token_fraction)
+            args.max_predictions_per_seq, args.masked_token_fraction,
+            vocab_size=vocab_size)
     sampler = DistributedSampler(dataset, get_world_size(), rank=get_rank())
+
+    if checkpoint is not None and 'sampler' in checkpoint:
+        sampler.load_state_dict(checkpoint['sampler'])
+
     loader = torch.utils.data.DataLoader(dataset, sampler=sampler,
             batch_size=args.local_batch_size, num_workers=4, pin_memory=True)
 
     if is_main_process():
-        logger.info('samples in dataset: {}'.format(len(dataset)))
-        logger.info('batches in dataloader: {}'.format(len(loader)))
-    return loader
+        logger.info('Samples in dataset: {}'.format(len(dataset)))
+        logger.info('Samples per device: {}'.format(len(sampler)))
+        logger.info('Sampler starting index: {}'.format(sampler.index))
+        logger.info('Batches in dataloader: {}'.format(len(loader)))
+    return loader, sampler
 
 
 def take_optimizer_step(optimizer, preconditioner, model, scaler):
@@ -427,21 +454,20 @@ def forward_backward_pass(model, criterion, scaler, batch, divisor,
 def main(args):
     global timeout_sent
 
-    model, checkpoint, global_step, criterion, args = prepare_model(args)
+    model, checkpoint, global_steps, criterion, args = prepare_model(args)
     optimizer, preconditioner, lr_schedulers, scaler = prepare_optimizers(
-            args, model, checkpoint, global_step)
-    dataloader = prepare_dataset(args)
+            args, model, checkpoint, global_steps)
+    dataloader, datasampler = prepare_dataset(args, checkpoint)
 
     model.train()
     most_recent_ckpts_paths = []
     average_loss = 0.0
     epoch = 0
-    # Note: Start at training step 1 so that training_step % accummulation_steps
-    #       != 0 on first foward/backward pass.
-    training_steps = 1
+    training_steps = 0
     train_time_start = time.time()
 
-    # Note: We loop infinitely over epochs, termination is handled via iteration count
+    # Note: We loop infinitely over epochs, termination is handled 
+    #       via iteration count
     while True:
         if not args.disable_progress_bar:
             train_iter = tqdm(dataloader, disable=not is_main_process())
@@ -449,53 +475,53 @@ def main(args):
             train_iter = dataloader
 
         for batch in train_iter:
-            training_steps += 1
+            sync_grads = False
+            if args.accumulation_steps == 1 or (training_steps > 0 
+                    and training_steps % args.accumulation_steps == 0):
+                sync_grads = True
 
             batch = [t.to(args.device) for t in batch]
             loss = forward_backward_pass(model, criterion, scaler, batch,
-                    args.accumulation_steps,
-                    sync_grads=training_steps % args.accumulation_steps==0)
+                    args.accumulation_steps, sync_grads=sync_grads)
             average_loss += loss.item()
 
-            if training_steps % args.accumulation_steps == 0:
+            if sync_grads:
                 for lrs in lr_schedulers:
                     lrs.step()
                 take_optimizer_step(optimizer, preconditioner, 
                         model, scaler)
-                global_step += 1
-
-            if training_steps % args.accumulation_steps == 0:
+                global_steps += 1
                 logger.log(tag='train',
-                           step=global_step+args.previous_phase_end_step,
+                           step=global_steps+args.previous_phase_end_step,
                            epoch=epoch,
                            average_loss=average_loss,
                            step_loss=loss.item() * args.accumulation_steps,
                            learning_rate=optimizer.param_groups[0]['lr'])
                 average_loss = 0
 
-            if (global_step >= args.max_steps or
-                    training_steps % (args.num_steps_per_checkpoint * args.accumulation_steps) == 0 or
-                    timeout_sent):
-                if global_step >= args.max_steps or timeout_sent:
+            if (global_steps >= args.max_steps or timeout_sent or
+                    (training_steps > 0 and training_steps % (
+                    args.num_steps_per_checkpoint * args.accumulation_steps
+                    ) == 0)):
+                if global_steps >= args.max_steps or timeout_sent:
                     final_time = time.time() - train_time_start
                 if is_main_process() and not args.skip_checkpoint:
                     # Save a trained model
-                    logger.info('Saving checkpoint: global_step={}'.format(
-                            global_step + args.previous_phase_end_step))
+                    logger.info('Saving checkpoint: global_steps={}'.format(
+                            global_steps + args.previous_phase_end_step))
                     model_to_save = model.module if hasattr(model, 'module') else model
                     output_save_file = os.path.join(args.output_dir,
-                            "ckpt_{}.pt".format(global_step + args.previous_phase_end_step))
-                    torch.save(
-                        {
-                            'model': model_to_save.state_dict(),
-                            'optimizer': optimizer.state_dict(),
-                            'preconditioner': preconditioner.state_dict()
-                                    if preconditioner is not None else None,
-                            'epoch': epoch,
-                            # TODO save dataloader here?
-                        },
-                        output_save_file
-                    )
+                            "ckpt_{}.pt".format(global_steps + args.previous_phase_end_step))
+                    model_dict = {
+                        'model': model_to_save.state_dict(),
+                        'optimizer': optimizer.state_dict(),
+                        'sampler': datasampler.state_dict(),
+                    }
+                    if preconditioner is not None:
+                        model_dict['preconditioner'] = preconditioner.state_dict()
+                    if scaler is not None:
+                        model_dict['scaler'] = scaler.state_dict()
+                    torch.save(model_dict, output_save_file)
 
                     most_recent_ckpts_paths.append(output_save_file)
                     if len(most_recent_ckpts_paths) > 3:
@@ -504,8 +530,10 @@ def main(args):
 
             # Exiting the training due to hitting max steps, or being sent a
             # timeout from the cluster scheduler
-            if global_step >= args.max_steps or timeout_sent:
-                return global_step, final_time
+            if global_steps >= args.max_steps or timeout_sent:
+                return global_steps, final_time
+            
+            training_steps += 1
 
         epoch += 1
 
@@ -532,10 +560,10 @@ if __name__ == "__main__":
     logger.info(args)
 
     start_time = time.time()
-    global_step, train_time = main(args)
+    global_steps, train_time = main(args)
     runtime = time.time() - start_time
 
     logger.info("runtime: {}  train_time: {}  training_seq_per_sec: {}".format(
             runtime, train_time,
-            args.global_batch_size * global_step / train_time))
+            args.global_batch_size * global_steps / train_time))
 
