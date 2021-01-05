@@ -201,7 +201,7 @@ def setup_training(args):
             logger.TorchTensorboardHandler(args.output_dir,
                                            verbose=is_main_process()),
             logger.CSVHandler(os.path.join(args.output_dir, 'metrics.csv'),
-                               overwrite=False),
+                               overwrite=False, verbose=is_main_process()),
         ]
     )
 
