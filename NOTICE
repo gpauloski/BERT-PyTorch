@@ -2,3 +2,8 @@ BERT PyTorch
 
 This repository includes software from https://github.com/huggingface/pytorch-pretrained-BERT
 licensed under the Apache License 2.0.
+
+This repository include software from 
+https://github.com/NVIDIA/DeepLearningExamples/tree/master/PyTorch/LanguageModeling/BERT
+licensed under the Apache License 2.0.
+

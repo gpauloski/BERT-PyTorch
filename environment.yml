@@ -19,5 +19,6 @@ dependencies:
       - html2text
       - progressbar
       - git+https://github.com/gpauloski/loggerplus
+      - git+https://github.com/NVIDIA/dllogger
       - git+https://github.com/gpauloski/kfac_pytorch@experimental
 

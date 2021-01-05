@@ -24,7 +24,10 @@ import unicodedata
 import six
 from io import open
 
-from file_utils import cached_path
+try:
+    from file_utils import cached_path
+except ImportError:
+    from .file_utils import cached_path
 
 logger = logging.getLogger(__name__)
 

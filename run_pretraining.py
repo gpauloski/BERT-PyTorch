@@ -16,12 +16,7 @@
 
 """BERT pretraining runner."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import argparse
-import h5py
 import json
 import loggerplus as logger
 import math
@@ -36,22 +31,25 @@ import torch
 import kfac
 
 from apex.optimizers import FusedLAMB
-from torch.utils.data import DataLoader, RandomSampler, Dataset
+from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
 from torch.nn.parallel import DistributedDataParallel as DDP
 from tqdm import tqdm
+from pathlib import Path
 
 import bert.modeling as modeling
-from bert.schedulers import PolyWarmUpScheduler
-from bert.utils import is_main_process, get_world_size, get_rank, WorkerInitObj
+import bert.tokenization as tokenization
 
-from concurrent.futures import ProcessPoolExecutor
+from bert.dataset import ShardedPretrainingDataset, DistributedSampler
+from bert.schedulers import PolyWarmUpScheduler, LinearWarmUpScheduler
+from bert.utils import is_main_process, get_world_size, get_rank
 
 try:
     from torch.cuda.amp import autocast, GradScaler
     TORCH_FP16 = True
 except:
     TORCH_FP16 = False
+
 
 # Track whether a SIGTERM (cluster time up) has been handled
 timeout_sent = False
@@ -64,58 +62,23 @@ def signal_handler(sig, frame):
 
 signal.signal(signal.SIGTERM, signal_handler)
 
-def create_pretraining_dataset(input_file, max_pred_length, shared_list, args, worker_init):
-    train_data = pretraining_dataset(input_file=input_file, max_pred_length=max_pred_length)
-    train_sampler = RandomSampler(train_data)
-    train_dataloader = DataLoader(train_data, sampler=train_sampler,
-                                  batch_size=args.local_batch_size, num_workers=4,
-                                  worker_init_fn=worker_init, pin_memory=True)
-    return train_dataloader, input_file
-
-
-class pretraining_dataset(Dataset):
-    def __init__(self, input_file, max_pred_length):
-        self.input_file = input_file
-        self.max_pred_length = max_pred_length
-        f = h5py.File(input_file, "r")
-        keys = ['input_ids', 'input_mask', 'segment_ids', 'masked_lm_positions',
-                'masked_lm_ids', 'next_sentence_labels']
-        self.inputs = [np.asarray(f[key][:]) for key in keys]
-        f.close()
-
-    def __len__(self):
-        return len(self.inputs[0])
-
-    def __getitem__(self, index):
-        [input_ids, input_mask, segment_ids, masked_lm_positions, masked_lm_ids, next_sentence_labels] = [
-            torch.from_numpy(input[index].astype(np.int64)) if indice < 5 else torch.from_numpy(
-                np.asarray(input[index].astype(np.int64))) for indice, input in enumerate(self.inputs)]
-
-        masked_lm_labels = torch.ones(input_ids.shape, dtype=torch.long) * -1
-        index = self.max_pred_length
-        # store number of  masked tokens in index
-        padded_mask_indices = torch.nonzero(masked_lm_positions == 0, as_tuple=False)
-        if len(padded_mask_indices) != 0:
-            index = padded_mask_indices[0].item()
-        masked_lm_labels[masked_lm_positions[:index]] = masked_lm_ids[:index]
-
-        return [input_ids, segment_ids, input_mask, masked_lm_labels, next_sentence_labels]
-
 
 class BertPretrainingCriterion(torch.nn.Module):
-    def __init__(self, vocab_size):
+    def __init__(self, vocab_size, ignore_next_sentence=False):
         super(BertPretrainingCriterion, self).__init__()
         self.loss_fn = torch.nn.CrossEntropyLoss(ignore_index=-1)
         self.vocab_size = vocab_size
+        self.ignore_next_sentence=ignore_next_sentence
 
     def forward(self, prediction_scores, seq_relationship_score, masked_lm_labels,
                 next_sentence_labels):
         masked_lm_loss = self.loss_fn(prediction_scores.view(-1, self.vocab_size),
                                       masked_lm_labels.view(-1))
-        next_sentence_loss = self.loss_fn(seq_relationship_score.view(-1, 2),
-                                          next_sentence_labels.view(-1))
-        total_loss = masked_lm_loss + next_sentence_loss
-        return total_loss
+        if not self.ignore_next_sentence:
+            next_sentence_loss = self.loss_fn(seq_relationship_score.view(-1, 2),
+                                              next_sentence_labels.view(-1))
+            return masked_lm_loss + next_sentence_loss
+        return masked_lm_loss
 
 
 def parse_arguments():
@@ -132,6 +95,17 @@ def parse_arguments():
                         help="The output dir for checkpoints and logging.")
     parser.add_argument("--model_config_file", default=None, type=str,
                         help="The BERT model config")
+    parser.add_argument("--vocab_file", default=None, type=str,
+                        help="The vocab file used for encoding the dataset. "
+                             "Only needed if dataset is not already masked.")
+
+    ## Dynamic Masking Parameters
+    parser.add_argument("--masked_token_fraction", type=float, default=0.2,
+                        help='Fraction of tokens to mask per sequence')
+    parser.add_argument("--max_predictions_per_seq", type=int, default=80,
+                        help='Maximum masked tokens per sequence')
+    parser.add_argument("--uppercase", action='store_true', default=False,
+                        help='Use cased vocab')
 
     ## Training Configuration
     parser.add_argument('--disable_progress_bar', default=False, action='store_true',
@@ -146,12 +120,15 @@ def parse_arguments():
                         help="random seed for initialization")
     parser.add_argument('--fp16', default=False, action='store_true',
                         help="Use PyTorch AMP training")
+    parser.add_argument('--ignore_next_sentence', default=False, action='store_true',
+                        help="Skip next sentence prediction tasks in loss")
 
     ## Hyperparameters
-    parser.add_argument("--max_predictions_per_seq", default=80, type=int,
-                        help="The maximum total of masked tokens in input sequence")
     parser.add_argument("--learning_rate", default=5e-5, type=float,
                         help="The initial learning rate.")
+    parser.add_argument("--lr_decay", default='poly', type=str,
+                        choices=['poly', 'linear'],
+                        help="Learning rate decay type.")
     parser.add_argument("--warmup_proportion", default=0.01, type=float,
                         help="Proportion of training to perform linear learning rate "
                              "warmup for. E.g., 0.1 = 10%% of training.")
@@ -173,7 +150,7 @@ def parse_arguments():
                         help='iters between kfac cov ops')
     parser.add_argument('--kfac_stat_decay', type=float, default=0.95,
                         help='Alpha value for covariance accumulation')
-    parser.add_argument('--kfac_damping', type=float, default=0.003,
+    parser.add_argument('--kfac_damping', type=float, default=0.001,
                         help='KFAC damping factor')
     parser.add_argument('--kfac_kl_clip', type=float, default=0.001,
                         help='KFAC KL gradient clip')
@@ -188,11 +165,19 @@ def parse_arguments():
 
     args = parser.parse_args()
 
+    # Hacky way to figure out to distinguish arguments that were found
+    # in sys.argv[1:]
+    aux_parser = argparse.ArgumentParser(argument_default=argparse.SUPPRESS)
+    for arg in vars(args):
+        aux_parser.add_argument('--' + arg)
+    cli_args, _ = aux_parser.parse_known_args()
+
+    # Argument precedent: cli_args > config_file > argparse defaults
     if args.config_file is not None:
         with open(args.config_file) as jf:
             configs = json.load(jf)
         for key in configs:
-            if key in vars(args):
+            if key in vars(args) and key not in vars(cli_args):
                 setattr(args, key, configs[key])
 
     return args
@@ -215,8 +200,8 @@ def setup_training(args):
                                overwrite=False, verbose=is_main_process()),
             logger.TorchTensorboardHandler(args.output_dir,
                                            verbose=is_main_process()),
-            #logger.CSVHandler(os.path.join(args.output_dir, 'metrics.csv'),
-            #                   overwrite=False),
+            logger.CSVHandler(os.path.join(args.output_dir, 'metrics.csv'),
+                               overwrite=False),
         ]
     )
 
@@ -258,7 +243,7 @@ def prepare_model(args):
     model = modeling.BertForPreTraining(config)
 
     checkpoint = None
-    global_step = 0
+    global_steps = 0
     args.resume_step = 0
     checkpoint_names = [f for f in os.listdir(args.output_dir) if f.endswith(".pt")]
     if len(checkpoint_names) > 0:
@@ -276,22 +261,21 @@ def prepare_model(args):
             raise ValueError('previous_phase_end_step={} cannot be larger '
                              'than resume_step={}'.format(
                              args.previous_phase_end_step, args.resume_step))
-        global_step = args.resume_step - args.previous_phase_end_step
+        global_steps = args.resume_step - args.previous_phase_end_step
         
         logger.info('Resume from step {} checkpoint'.format(args.resume_step))
 
     model.to(args.device)
     model.checkpoint_activations(args.checkpoint_activations)
 
-    if get_world_size() > 1:
-        model = DDP(model, device_ids=[args.local_rank])
+    model = DDP(model, device_ids=[args.local_rank])
 
     criterion = BertPretrainingCriterion(config.vocab_size)
 
-    return model, checkpoint, global_step, criterion, args
+    return model, checkpoint, global_steps, criterion, args
 
 
-def prepare_optimizers(args, model, checkpoint, global_step):
+def prepare_optimizers(args, model, checkpoint, global_steps):
     param_optimizer = list(model.named_parameters())
     no_decay = ['bias', 'gamma', 'beta', 'LayerNorm']
 
@@ -302,15 +286,36 @@ def prepare_optimizers(args, model, checkpoint, global_step):
          'weight_decay': 0.0}
     ]
 
+    if args.lr_decay == 'poly':
+        Scheduler = PolyWarmUpScheduler
+    elif args.lr_decay == 'linear':
+        Scheduler = LinearWarmUpScheduler
+    else:
+        raise ValueError('Unknown lr decay "{}"'.format(args.lr_decay))
+
     optimizer = FusedLAMB(optimizer_grouped_parameters,
                           lr=args.learning_rate)
-    lr_schedulers = [PolyWarmUpScheduler(optimizer,
-                                         warmup=args.warmup_proportion,
-                                         total_steps=args.max_steps)]
+    lr_schedulers = [Scheduler(optimizer, warmup=args.warmup_proportion,
+            total_steps=args.max_steps)]
+    
+    if checkpoint is not None:
+        if args.resume_step >= args.previous_phase_end_step:
+            keys = list(checkpoint['optimizer']['state'].keys())
+            # Override hyperparameters from previous checkpoint
+            for key in keys:
+                checkpoint['optimizer']['state'][key]['step'] = global_steps
+            for i, item in enumerate(checkpoint['optimizer']['param_groups']):
+                checkpoint['optimizer']['param_groups'][i]['step'] = global_steps
+                checkpoint['optimizer']['param_groups'][i]['t_total'] = args.max_steps
+                checkpoint['optimizer']['param_groups'][i]['warmup'] = args.warmup_proportion
+                checkpoint['optimizer']['param_groups'][i]['lr'] = args.learning_rate
+        optimizer.load_state_dict(checkpoint['optimizer'])
 
     scaler = None
     if args.fp16:
         scaler = GradScaler()
+        if checkpoint is not None and 'scaler' in checkpoint:
+            scaler.load_state_dict(checkpoint['scaler'])
 
     preconditioner = None
     if args.kfac:
@@ -320,55 +325,72 @@ def prepare_optimizers(args, model, checkpoint, global_step):
             factor_decay=args.kfac_stat_decay,
             damping=args.kfac_damping, 
             kl_clip=args.kfac_kl_clip,
-            batch_first=True,
             factor_update_freq=args.kfac_factor_interval,
             inv_update_freq=args.kfac_inv_interval,
-            use_eigen_decomp=True,
             # Skip TrainingHeads which contains the decoder, a Linear module
             # with shape (seq_len, vocab_size), such that it is too large to invert
             skip_layers=args.kfac_skip_layers,
-            # False b/c we use grad accumulation, accumulating the input/output
-            # data will substantially increase memory usage
-            accumulate_data=False,
             # BERT calls KFAC very infrequently so no need to optimize for
             # communication. Optimize for memory instead.
             comm_method=kfac.CommMethod.MEM_OPT,
             # Compute the factors and update the running averages during the
             # forward backward pass b/c we are using grad accumulation but
             # not accumulating the input/output data
+            accumulate_data=False,
             compute_factor_in_hook=True,
             distribute_layer_factors=False,
             grad_scaler=scaler,
-            verbose=False,
         )
-        lrs = PolyWarmUpScheduler(
-            preconditioner, 
-            warmup=args.warmup_proportion, 
-            total_steps=args.max_steps
-        )
+
+        lrs = Scheduler(preconditioner, warmup=args.warmup_proportion, 
+                total_steps=args.max_steps)
         lr_schedulers.append(lrs)
+
+        if checkpoint is not None and 'preconditioner' in checkpoint:
+            preconditioner.load_state_dict(checkpoint['preconditioner'])
 
         if is_main_process():
             logger.info(preconditioner)
 
-    if checkpoint is not None:
-        if args.resume_step >= args.previous_phase_end_step:
-            keys = list(checkpoint['optimizer']['state'].keys())
-            # Override hyperparameters from previous checkpoint
-            for key in keys:
-                checkpoint['optimizer']['state'][key]['step'] = global_step
-            for iter, item in enumerate(checkpoint['optimizer']['param_groups']):
-                checkpoint['optimizer']['param_groups'][iter]['step'] = global_step
-                checkpoint['optimizer']['param_groups'][iter]['t_total'] = args.max_steps
-                checkpoint['optimizer']['param_groups'][iter]['warmup'] = args.warmup_proportion
-                checkpoint['optimizer']['param_groups'][iter]['lr'] = args.learning_rate
-        optimizer.load_state_dict(checkpoint['optimizer'])
-        if ('preconditioner' in checkpoint and
-                checkpoint['preconditioner'] is not None and
-                preconditioner is not None):
-            preconditioner.load_state_dict(checkpoint['preconditioner'])
-
     return optimizer, preconditioner, lr_schedulers, scaler
+
+
+def prepare_dataset(args, checkpoint):
+    input_files = []
+    if os.path.isfile(args.input_dir):
+        input_files.append(args.input_dir)
+    elif os.path.isdir(args.input_dir):
+        for path in Path(args.input_dir).rglob('*.hdf5'):
+            if path.is_file():
+                input_files.append(str(path))
+
+    with open(args.model_config_file) as f:
+        vocab_size = json.load(f)['vocab_size']
+
+    mask_token_id = None
+    # TODO: change if we add support for different tokenizers
+    if args.vocab_file is not None and args.vocab_file != '':
+        tokenizer = tokenization.BertTokenizer(args.vocab_file,
+                do_lower_case=not args.uppercase)
+        mask_token_id = tokenizer.convert_tokens_to_ids(['[MASK]'])[0]
+
+    dataset = ShardedPretrainingDataset(input_files, mask_token_id, 
+            args.max_predictions_per_seq, args.masked_token_fraction,
+            vocab_size=vocab_size)
+    sampler = DistributedSampler(dataset, get_world_size(), rank=get_rank())
+
+    if checkpoint is not None and 'sampler' in checkpoint:
+        sampler.load_state_dict(checkpoint['sampler'])
+
+    loader = torch.utils.data.DataLoader(dataset, sampler=sampler,
+            batch_size=args.local_batch_size, num_workers=4, pin_memory=True)
+
+    if is_main_process():
+        logger.info('Samples in dataset: {}'.format(len(dataset)))
+        logger.info('Samples per device: {}'.format(len(sampler)))
+        logger.info('Sampler starting index: {}'.format(sampler.index))
+        logger.info('Batches in dataloader: {}'.format(len(loader)))
+    return loader, sampler
 
 
 def take_optimizer_step(optimizer, preconditioner, model, scaler):
@@ -432,141 +454,86 @@ def forward_backward_pass(model, criterion, scaler, batch, divisor,
 def main(args):
     global timeout_sent
 
-    model, checkpoint, global_step, criterion, args = prepare_model(args)
+    model, checkpoint, global_steps, criterion, args = prepare_model(args)
     optimizer, preconditioner, lr_schedulers, scaler = prepare_optimizers(
-            args, model, checkpoint, global_step)
+            args, model, checkpoint, global_steps)
+    dataloader, datasampler = prepare_dataset(args, checkpoint)
 
     model.train()
     most_recent_ckpts_paths = []
     average_loss = 0.0
     epoch = 0
     training_steps = 0
-    train_time_start = None
+    train_time_start = time.time()
 
-    worker_init = WorkerInitObj(args.seed + args.local_rank)
-    pool = ProcessPoolExecutor(1)
-
-    # Note: We loop infinitely over epochs, termination is handled via iteration count
+    # Note: We loop infinitely over epochs, termination is handled 
+    #       via iteration count
     while True:
-        restored_data_loader = None
-        if checkpoint is None or epoch > 0 or global_step == 0:
-            files = [os.path.join(args.input_dir, f) for f in os.listdir(args.input_dir) if
-                     os.path.isfile(os.path.join(args.input_dir, f)) and 'training' in f]
-            files.sort()
-            num_files = len(files)
-            random.Random(args.seed + epoch).shuffle(files)
-            f_start_id = 0
+        if not args.disable_progress_bar:
+            train_iter = tqdm(dataloader, disable=not is_main_process())
         else:
-            f_start_id = checkpoint['files'][0]
-            files = checkpoint['files'][1:]
-            args.resume_from_checkpoint = False
-            num_files = len(files)
-            epoch = checkpoint.get('epoch', 0)
-            restored_data_loader = checkpoint.get('data_loader', None)
+            train_iter = dataloader
 
-        shared_file_list = {}
+        for batch in train_iter:
+            sync_grads = False
+            if args.accumulation_steps == 1 or (training_steps > 0 
+                    and training_steps % args.accumulation_steps == 0):
+                sync_grads = True
 
-        if get_world_size() > num_files:
-            remainder = get_world_size() % num_files
-            data_file = files[(f_start_id*get_world_size()+get_rank() + remainder*f_start_id)%num_files]
-        else:
-            data_file = files[(f_start_id*get_world_size()+get_rank())%num_files]
+            batch = [t.to(args.device) for t in batch]
+            loss = forward_backward_pass(model, criterion, scaler, batch,
+                    args.accumulation_steps, sync_grads=sync_grads)
+            average_loss += loss.item()
 
-        previous_file = data_file
+            if sync_grads:
+                for lrs in lr_schedulers:
+                    lrs.step()
+                take_optimizer_step(optimizer, preconditioner, 
+                        model, scaler)
+                global_steps += 1
+                logger.log(tag='train',
+                           step=global_steps+args.previous_phase_end_step,
+                           epoch=epoch,
+                           average_loss=average_loss,
+                           step_loss=loss.item() * args.accumulation_steps,
+                           learning_rate=optimizer.param_groups[0]['lr'])
+                average_loss = 0
 
-        if restored_data_loader is None:
-            train_data = pretraining_dataset(data_file, args.max_predictions_per_seq)
-            train_sampler = RandomSampler(train_data)
-            train_dataloader = DataLoader(train_data, sampler=train_sampler,
-                                          batch_size=args.local_batch_size,
-                                          num_workers=4, worker_init_fn=worker_init,
-                                          pin_memory=True)
-        else:
-            train_dataloader = restored_data_loader
-            restored_data_loader = None
+            if (global_steps >= args.max_steps or timeout_sent or
+                    (training_steps > 0 and training_steps % (
+                    args.num_steps_per_checkpoint * args.accumulation_steps
+                    ) == 0)):
+                if global_steps >= args.max_steps or timeout_sent:
+                    final_time = time.time() - train_time_start
+                if is_main_process() and not args.skip_checkpoint:
+                    # Save a trained model
+                    logger.info('Saving checkpoint: global_steps={}'.format(
+                            global_steps + args.previous_phase_end_step))
+                    model_to_save = model.module if hasattr(model, 'module') else model
+                    output_save_file = os.path.join(args.output_dir,
+                            "ckpt_{}.pt".format(global_steps + args.previous_phase_end_step))
+                    model_dict = {
+                        'model': model_to_save.state_dict(),
+                        'optimizer': optimizer.state_dict(),
+                        'sampler': datasampler.state_dict(),
+                    }
+                    if preconditioner is not None:
+                        model_dict['preconditioner'] = preconditioner.state_dict()
+                    if scaler is not None:
+                        model_dict['scaler'] = scaler.state_dict()
+                    torch.save(model_dict, output_save_file)
 
+                    most_recent_ckpts_paths.append(output_save_file)
+                    if len(most_recent_ckpts_paths) > 3:
+                        ckpt_to_be_removed = most_recent_ckpts_paths.pop(0)
+                        os.remove(ckpt_to_be_removed)
 
-        for f_id in range(f_start_id + 1 , len(files)):
-
-            if get_world_size() > num_files:
-                data_file = files[(f_id*get_world_size()+get_rank() + remainder*f_id)%num_files]
-            else:
-                data_file = files[(f_id*get_world_size()+get_rank())%num_files]
-
-            previous_file = data_file
-
-            dataset_future = pool.submit(create_pretraining_dataset, data_file,
-                    args.max_predictions_per_seq, shared_file_list, args, worker_init)
-
-            train_iter = tqdm(train_dataloader, desc="Iteration",
-                    disable=not (not args.disable_progress_bar and is_main_process()))
-
-            if train_time_start is None:
-                train_time_start = time.time()
-
-            for batch in train_iter:
-                training_steps += 1
-
-                batch = [t.to(args.device) for t in batch]
-                loss = forward_backward_pass(model, criterion, scaler, batch,
-                        args.accumulation_steps,
-                        sync_grads=training_steps % args.accumulation_steps==0)
-                average_loss += loss.item()
-
-                if training_steps % args.accumulation_steps == 0:
-                    for lrs in lr_schedulers:
-                        lrs.step()
-                    take_optimizer_step(optimizer, preconditioner, 
-                            model, scaler)
-                    global_step += 1
-
-                if training_steps % args.accumulation_steps == 0:
-                    logger.log(tag='train',
-                               step=global_step+args.previous_phase_end_step,
-                               epoch=epoch,
-                               average_loss=average_loss,
-                               step_loss=loss.item() * args.accumulation_steps,
-                               learning_rate=optimizer.param_groups[0]['lr'])
-                    average_loss = 0
-
-                if (global_step >= args.max_steps or
-                        training_steps % (args.num_steps_per_checkpoint * args.accumulation_steps) == 0 or
-                        timeout_sent):
-                    if global_step >= args.max_steps or timeout_sent:
-                        final_time = time.time() - train_time_start
-                    if is_main_process() and not args.skip_checkpoint:
-                        # Save a trained model
-                        logger.info('Saving checkpoint: global_step={}'.format(
-                                global_step + args.previous_phase_end_step))
-                        model_to_save = model.module if hasattr(model, 'module') else model
-                        output_save_file = os.path.join(args.output_dir,
-                                "ckpt_{}.pt".format(global_step + args.previous_phase_end_step))
-                        torch.save(
-                            {
-                                'model': model_to_save.state_dict(),
-                                'optimizer': optimizer.state_dict(),
-                                'preconditioner': preconditioner.state_dict()
-                                        if preconditioner is not None else None,
-                                'files': [f_id] + files,
-                                'epoch': epoch,
-                                'data_loader': None if global_step >= args.max_steps else train_dataloader
-                            },
-                            output_save_file
-                        )
-
-                        most_recent_ckpts_paths.append(output_save_file)
-                        if len(most_recent_ckpts_paths) > 3:
-                            ckpt_to_be_removed = most_recent_ckpts_paths.pop(0)
-                            os.remove(ckpt_to_be_removed)
-
-                # Exiting the training due to hitting max steps, or being sent a
-                # timeout from the cluster scheduler
-                if global_step >= args.max_steps or timeout_sent:
-                    del train_dataloader
-                    return global_step, final_time
-
-            del train_dataloader
-            train_dataloader, data_file = dataset_future.result(timeout=None)
+            # Exiting the training due to hitting max steps, or being sent a
+            # timeout from the cluster scheduler
+            if global_steps >= args.max_steps or timeout_sent:
+                return global_steps, final_time
+            
+            training_steps += 1
 
         epoch += 1
 
@@ -593,10 +560,10 @@ if __name__ == "__main__":
     logger.info(args)
 
     start_time = time.time()
-    global_step, train_time = main(args)
+    global_steps, train_time = main(args)
     runtime = time.time() - start_time
 
     logger.info("runtime: {}  train_time: {}  training_seq_per_sec: {}".format(
             runtime, train_time,
-            args.global_batch_size * global_step / train_time))
+            args.global_batch_size * global_steps / train_time))
 
