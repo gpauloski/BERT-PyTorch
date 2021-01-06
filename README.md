@@ -76,7 +76,7 @@ See `python run_pretraining.py --help` for a full list of arguments and their de
 
 #### Single-Node Multi-GPU Training
 ```
-$ python -m torch.distributed.launch --nproc_per_node=$GPUS_PER_NODE run_pretraining.py --config_file $PHASE1_CONFIG --input_dir=$PHASE1_DATA --output_dir $OUTPUT_DIR
+$ python -m torch.distributed.launch --nproc_per_node=$GPUS_PER_NODE run_pretraining.py --config_file $PHASE1_CONFIG --input_dir $PHASE1_DATA --output_dir $OUTPUT_DIR
 ```
 An example `$PHASE1_CONFIG` is provided in `config/bert_pretraining_phase1_config.json`.
 The example configs are tuned for 40GB NVIDIA A100s.
@@ -88,7 +88,7 @@ Training logs are written to `$OUTPUT_DIR/log.txt`, and TensorBoard can be used 
 
 #### Multi-Node Multi-GPU Training
 ```
-$ python -m torch.distributed.launch --node_rank=$RANK --master_addr=$MASTER --nnodes=$NODE_COUNT --nproc_per_node=$GPUS_PER_NODE --config $PHASE1_CONFIG --input_dir $PHASE1_DATA --output_dir $OUTPUT_DIR
+$ python -m torch.distributed.launch --node_rank=$RANK --master_addr=$MASTER --nnodes=$NODE_COUNT --nproc_per_node=$GPUS_PER_NODE run_pretraining.py --config $PHASE1_CONFIG --input_dir $PHASE1_DATA --output_dir $OUTPUT_DIR
 ```
 This command must be run on each node where the `--node_rank` is changed appropriately.
 `$MASTER` is the hostname of the first node (e.g. thetagpu08).
@@ -130,9 +130,9 @@ $ export PHASE2_CONFIG=config/bert_pretraining_phase2_config.json
 $ export PHASE1_DATA=/lus/theta-fs0/projects/SuperBERT/datasets/wikicorpus_en/phase1
 $ export PHASE2_DATA=/lus/theta-fs0/projects/SuperBERT/datasets/wikicorpus_en/phase2
 $ # PHASE 1
-$ python -m torch.distributed.launch --nproc_per_node=8 run_pretraining.py --config_file $PHASE1_CONFIG --input_dir=$PHASE1_DATA --output_dir $OUTPUT_DIR
+$ python -m torch.distributed.launch --nproc_per_node=8 run_pretraining.py --config_file $PHASE1_CONFIG --input_dir $PHASE1_DATA --output_dir $OUTPUT_DIR
 $ # PHASE 2
-$ python -m torch.distributed.launch --nproc_per_node=8 run_pretraining.py --config_file $PHASE2_CONFIG --input_dir=$PHASE2_DATA --output_dir $OUTPUT_DIR
+$ python -m torch.distributed.launch --nproc_per_node=8 run_pretraining.py --config_file $PHASE2_CONFIG --input_dir $PHASE2_DATA --output_dir $OUTPUT_DIR
 ```
 
 For automatic multi-node training in an interactive qsub session:
