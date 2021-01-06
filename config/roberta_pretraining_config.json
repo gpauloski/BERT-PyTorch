@@ -9,8 +9,9 @@
     "lr_decay": "linear",
 	"warmup_proportion": 0.06,
 	"global_batch_size": 8192,
-	"local_batch_size": 16,
+	"local_batch_size": 14,
 	"max_steps": 100000,
+    "num_steps_per_checkpoint": 500,
 	"kfac": false,
 	"kfac_inv_interval": 10,
 	"kfac_factor_interval": 1

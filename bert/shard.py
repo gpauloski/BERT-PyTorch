@@ -20,7 +20,7 @@ def shard(input_file, output_file_format, bytes_per_shard, max_shards=None):
             if line == '\n' and ofile.tell() > bytes_per_shard:
                 index += 1
                 ofile.close()
-                if index > max_shards:
+                if max_shards is not None and index > max_shards:
                     return
                 ofile_name = output_file_format.format(index=index)
                 ofile = open(ofile_name, 'w', encoding='utf-8')

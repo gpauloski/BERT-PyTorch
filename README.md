@@ -172,3 +172,5 @@ To monitor training with TensorBoard, see the [Theta TensorBoard Instructions](h
 - [ ] Add option to limit maximum file size for `format.py` instead of choosing `n_shard`.
 - [ ] Go through TODOs in repo
 - [ ] Add byte-pair encoding option
+- [ ] write config file to output directory
+
