@@ -6,7 +6,7 @@
 	"warmup_proportion": 0.2843,
 	"global_batch_size": 65536,
 	"local_batch_size": 96,
-	"max_steps": 7138,
+	"max_steps": 7038,
 	"kfac": false,
 	"kfac_inv_interval": 10,
 	"kfac_factor_interval": 1
