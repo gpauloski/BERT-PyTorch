@@ -11,14 +11,14 @@ PHASE=1
 
 if [[ "$PHASE" -eq 1 ]]; then
 	CONFIG=config/bert_pretraining_phase1_config.json
-	DATA=/lus/theta-fs0/projects/SuperBERT/datasets/wikicorpus_en/phase1
+	DATA=/lus/theta-fs0/projects/SuperBERT/datasets/encoded/bert_masked_wikicorpus_en/phase1
 else
 	CONFIG=config/bert_pretraining_phase2_config.json
-	DATA=/lus/theta-fs0/projects/SuperBERT/datasets/wikicorpus_en/phase2
+	DATA=/lus/theta-fs0/projects/SuperBERT/datasets/encoded/bert_masked_wikicorpus_en/phase2
 fi
 
 VOCAB_FILE=/lus/theta-fs0/projects/SuperBERT/datasets/download/google_pretrained_weights/uncased_L-24_H-1024_A-16/vocab.txt
-OUTPUT_DIR=results/bert_no_kfac_pretraining
+OUTPUT_DIR=results/bert_pretraining
 
 MASTER_RANK=$(head -n 1 $COBALT_NODEFILE)
 RANKS=$(tr '\n' ' ' < $COBALT_NODEFILE)

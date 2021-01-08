@@ -127,8 +127,8 @@ To launch training on a single node in an interactive qsub session using the exi
 $ export OUTPUT_DIR=results/bert_pretraining
 $ export PHASE1_CONFIG=config/bert_pretraining_phase1_config.json
 $ export PHASE2_CONFIG=config/bert_pretraining_phase2_config.json
-$ export PHASE1_DATA=/lus/theta-fs0/projects/SuperBERT/datasets/wikicorpus_en/phase1
-$ export PHASE2_DATA=/lus/theta-fs0/projects/SuperBERT/datasets/wikicorpus_en/phase2
+$ export PHASE1_DATA=/lus/theta-fs0/projects/SuperBERT/datasets/encoded/bert_masked_wikicorpus_en/phase1
+$ export PHASE2_DATA=/lus/theta-fs0/projects/SuperBERT/datasets/encoded/bert_masked_wikicorpus_en/phase2
 $ # PHASE 1
 $ python -m torch.distributed.launch --nproc_per_node=8 run_pretraining.py --config_file $PHASE1_CONFIG --input_dir $PHASE1_DATA --output_dir $OUTPUT_DIR
 $ # PHASE 2
