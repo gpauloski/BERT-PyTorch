@@ -295,8 +295,6 @@ def prepare_optimizers(args, model, checkpoint, global_steps):
 
     optimizer = FusedLAMB(optimizer_grouped_parameters,
                           lr=args.learning_rate)
-    lr_schedulers = [Scheduler(optimizer, warmup=args.warmup_proportion,
-            total_steps=args.max_steps)]
     
     if checkpoint is not None:
         if args.resume_step >= args.previous_phase_end_step:
@@ -311,6 +309,9 @@ def prepare_optimizers(args, model, checkpoint, global_steps):
                 checkpoint['optimizer']['param_groups'][i]['lr'] = args.learning_rate
         optimizer.load_state_dict(checkpoint['optimizer'])
 
+    lr_schedulers = [Scheduler(optimizer, warmup=args.warmup_proportion,
+            total_steps=args.max_steps)]
+    
     scaler = None
     if args.fp16:
         scaler = GradScaler()
@@ -465,6 +466,9 @@ def main(args):
     epoch = 0
     training_steps = 0
     train_time_start = time.time()
+
+    if checkpoint is not None and 'epoch' in checkpoint:
+        epoch = checkpoint['epoch']
 
     # Note: We loop infinitely over epochs, termination is handled 
     #       via iteration count
