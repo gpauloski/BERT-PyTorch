@@ -116,6 +116,9 @@ def parse_arguments():
                         help="Whether to save checkpoints")
     parser.add_argument('--checkpoint_activations', default=False, action='store_true',
                         help="Whether to use gradient checkpointing")
+    parser.add_argument('--log_prefix', type=str, default='logfile',
+                        help='Prefix for log files. This is just the prefix of '
+                             'name and should not contain directories')
     parser.add_argument('--seed', type=int, default=42,
                         help="random seed for initialization")
     parser.add_argument('--fp16', default=False, action='store_true',
@@ -196,12 +199,14 @@ def setup_training(args):
     logger.init(
         handlers=[
             logger.StreamHandler(verbose=is_main_process()),
-            logger.FileHandler(os.path.join(args.output_dir, 'log.txt'),
+            logger.FileHandler(os.path.join(args.output_dir, 
+                                            args.log_prefix + '.txt'),
                                overwrite=False, verbose=is_main_process()),
             logger.TorchTensorboardHandler(args.output_dir,
                                            verbose=is_main_process()),
-            logger.CSVHandler(os.path.join(args.output_dir, 'metrics.csv'),
-                               overwrite=False, verbose=is_main_process()),
+            logger.CSVHandler(os.path.join(args.output_dir, 
+                                           args.log_prefix + '_metrics.csv'),
+                              overwrite=False, verbose=is_main_process()),
         ]
     )
 

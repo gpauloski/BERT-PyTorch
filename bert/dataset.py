@@ -3,6 +3,7 @@ import numpy as np
 import os
 import threading
 import torch
+import warnings
 
 
 class ShardedPretrainingDataset(torch.utils.data.Dataset):
@@ -409,8 +410,9 @@ class DistributedSampler(torch.utils.data.distributed.DistributedSampler):
     def load_state_dict(self, state_dict):
         if state_dict['total_size'] != self.total_size:
             warnings.warn('The number of samples in the Sampler has changed. '
-                          'Did the dataset or sampler parameters change? '
-                          'Skipping restoring sampler state.')
+                          'Skipping restoring sampler state. If the dataset '
+                          'was changed and the sampler should be reset, '
+                          'ignore this message')
             return
         if state_dict['num_replicas'] != self.num_replicas:
             warnings.warn('The number of replicas has changed so the resume '

@@ -173,4 +173,4 @@ To monitor training with TensorBoard, see the [Theta TensorBoard Instructions](h
 - [ ] Go through TODOs in repo
 - [ ] Add byte-pair encoding option
 - [ ] write config file to output directory
-
+- [x] specify log file prefix as argument
