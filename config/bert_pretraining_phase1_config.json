@@ -10,5 +10,5 @@
 	"kfac": false,
 	"kfac_inv_interval": 10,
 	"kfac_factor_interval": 1,
-    "log_prefix": "phase1_log"
+	"log_prefix": "phase1_log"
 }
