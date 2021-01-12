@@ -21,13 +21,7 @@ if [ ! -d "$OUTPUT_DIR" ]; then
 	echo "ERROR: unable to make $OUTPUT_DIR"
 fi
 
-#if [ "$NGPUS" != "1" ] ; then
-#	export CUDA_VISIBLE_DEVICES=0
 CMD="python -m torch.distributed.launch --nproc_per_node=$NGPUS run_squad.py"
-#else
-#	unset CUDA_VISIBLE_DEVICES
-#	CMD="python run_squad.py"
-#fi
 
 CMD+=" --init_checkpoint=$MODEL_CHECKPOINT "
 
