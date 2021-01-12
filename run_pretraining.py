@@ -525,6 +525,7 @@ def main(args):
                         'model': model_to_save.state_dict(),
                         'optimizer': optimizer.state_dict(),
                         'sampler': datasampler.state_dict(),
+                        'epoch': epoch,
                     }
                     if preconditioner is not None:
                         model_dict['preconditioner'] = preconditioner.state_dict()
