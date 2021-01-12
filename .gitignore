@@ -2,6 +2,7 @@ hostfile
 data/
 cobalt_logs/
 sbatch_logs/
+apex/
 
 # Initially taken from Github's Python gitignore file
 
