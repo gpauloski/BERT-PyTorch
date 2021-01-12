@@ -37,7 +37,7 @@ from tqdm import tqdm, trange
 from apex import amp
 from bert.schedulers import LinearWarmUpScheduler
 from bert.file_utils import PYTORCH_PRETRAINED_BERT_CACHE
-import bert.modeling
+import bert.modeling as modeling
 from bert.optimization import BertAdam, warmup_linear
 from bert.tokenization import (BasicTokenizer, BertTokenizer, whitespace_tokenize)
 from bert.utils import is_main_process, format_step
@@ -820,7 +820,7 @@ def main():
     parser.add_argument('--log_freq',
                         type=int, default=50,
                         help='frequency of logging loss.')
-    parser.add_argument('--json-summary', type=str, default="results/dllogger.json",
+    parser.add_argument('--json-summary', type=str, default="squad_log.json",
                         help='If provided, the json summary will be written to'
                              'the specified file.')
     parser.add_argument("--eval_script",
@@ -862,6 +862,8 @@ def main():
         # Initializes the distributed backend which will take care of sychronizing nodes/GPUs
         torch.distributed.init_process_group(backend='nccl', init_method='env://')
         n_gpu = 1
+
+    args.json_summary = os.path.join(args.output_dir, args.json_summary)
 
     if is_main_process():
         dllogger.init(backends=[dllogger.JSONStreamBackend(verbosity=dllogger.Verbosity.VERBOSE,

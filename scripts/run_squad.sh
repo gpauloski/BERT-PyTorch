@@ -1,95 +1,56 @@
-#!/usr/bin/env bash
+#!/bin/bash
 
-# Copyright (c) 2019 NVIDIA CORPORATION. All rights reserved.
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+MODEL_CHECKPOINT=${1:-"results/bert_pretraining/ckpt_8601.pt"}
+OUTPUT_DIR=${2:-"results/bert_pretraining"}
 
-echo "Container nvidia build = " $NVIDIA_BUILD_ID
+DATA_DIR="/lus/theta-fs0/projects/SuperBERT/datasets/download"
+SQUAD_DIR="$DATA_DIR/squad/v1.1"
+VOCAB_FILE="$DATA_DIR/google_pretrained_weights/uncased_L-24_H-1024_A-16/vocab.txt"
 
-init_checkpoint=${1:-"/workspace/bert/checkpoints/bert_uncased.pt"}
-epochs=${2:-"2.0"}
-batch_size=${3:-"4"}
-learning_rate=${4:-"3e-5"}
-precision=${5:-"fp16"}
-num_gpu=${6:-"8"}
-seed=${7:-"1"}
-squad_dir=${8:-"$BERT_PREP_WORKING_DIR/download/squad/v1.1"}
-vocab_file=${9:-"$BERT_PREP_WORKING_DIR/download/google_pretrained_weights/uncased_L-24_H-1024_A-16/vocab.txt"}
-OUT_DIR=${10:-"/workspace/bert/results/SQuAD"}
-mode=${11:-"train eval"}
-CONFIG_FILE=${12:-"/workspace/bert/bert_config.json"}
-max_steps=${13:-"-1"} 
+BERT_MODEL="bert-large-uncased"
+CONFIG_FILE="config/bert_large_config.json"
 
-echo "out dir is $OUT_DIR"
-mkdir -p $OUT_DIR
-if [ ! -d "$OUT_DIR" ]; then
-  echo "ERROR: non existing $OUT_DIR"
-  exit 1
+NGPUS=1
+BATCH_SIZE=4
+
+LOGFILE="$OUTPUT_DIR/squad_log.txt"
+
+echo "Output directory: $OUTPUT_DIR"
+mkdir -p $OUTPUT_DIR
+if [ ! -d "$OUTPUT_DIR" ]; then
+	echo "ERROR: unable to make $OUTPUT_DIR"
 fi
 
-use_fp16=""
-if [ "$precision" = "fp16" ] ; then
-  echo "fp16 activated!"
-  use_fp16=" --fp16 "
-fi
+#if [ "$NGPUS" != "1" ] ; then
+#	export CUDA_VISIBLE_DEVICES=0
+CMD="python -m torch.distributed.launch --nproc_per_node=$NGPUS run_squad.py"
+#else
+#	unset CUDA_VISIBLE_DEVICES
+#	CMD="python run_squad.py"
+#fi
 
-if [ "$num_gpu" = "1" ] ; then
-  export CUDA_VISIBLE_DEVICES=0
-  mpi_command=""
-else
-  unset CUDA_VISIBLE_DEVICES
-  mpi_command=" -m torch.distributed.launch --nproc_per_node=$num_gpu"
-fi
+CMD+=" --init_checkpoint=$MODEL_CHECKPOINT "
 
-CMD="python  $mpi_command run_squad.py "
-CMD+="--init_checkpoint=$init_checkpoint "
-if [ "$mode" = "train" ] ; then
-  CMD+="--do_train "
-  CMD+="--train_file=$squad_dir/train-v1.1.json "
-  CMD+="--train_batch_size=$batch_size "
-elif [ "$mode" = "eval" ] ; then
-  CMD+="--do_predict "
-  CMD+="--predict_file=$squad_dir/dev-v1.1.json "
-  CMD+="--predict_batch_size=$batch_size "
-  CMD+="--eval_script=$squad_dir/evaluate-v1.1.py "
-  CMD+="--do_eval "
-elif [ "$mode" = "prediction" ] ; then
-  CMD+="--do_predict "
-  CMD+="--predict_file=$squad_dir/dev-v1.1.json "
-  CMD+="--predict_batch_size=$batch_size "
-else
-  CMD+=" --do_train "
-  CMD+=" --train_file=$squad_dir/train-v1.1.json "
-  CMD+=" --train_batch_size=$batch_size "
-  CMD+="--do_predict "
-  CMD+="--predict_file=$squad_dir/dev-v1.1.json "
-  CMD+="--predict_batch_size=$batch_size "
-  CMD+="--eval_script=$squad_dir/evaluate-v1.1.py "
-  CMD+="--do_eval "
-fi
+CMD+=" --do_train "
+CMD+=" --train_file=$SQUAD_DIR/train-v1.1.json "
+CMD+=" --train_batch_size=$BATCH_SIZE "
+
+CMD+=" --do_predict "
+CMD+=" --predict_file=$SQUAD_DIR/dev-v1.1.json "
+CMD+=" --predict_batch_size=$BATCH_SIZE "
+CMD+=" --eval_script=$SQUAD_DIR/evaluate-v1.1.py "
+CMD+=" --do_eval "
 
 CMD+=" --do_lower_case "
-CMD+=" --bert_model=bert-large-uncased "
-CMD+=" --learning_rate=$learning_rate "
-CMD+=" --seed=$seed "
-CMD+=" --num_train_epochs=$epochs "
+CMD+=" --bert_model=$BERT_MODEL "
+CMD+=" --learning_rate=3e-5 "
+CMD+=" --num_train_epochs=2 "
 CMD+=" --max_seq_length=384 "
 CMD+=" --doc_stride=128 "
-CMD+=" --output_dir=$OUT_DIR "
-CMD+=" --vocab_file=$vocab_file "
+CMD+=" --output_dir=$OUTPUT_DIR "
+CMD+=" --vocab_file=$VOCAB_FILE "
 CMD+=" --config_file=$CONFIG_FILE "
-CMD+=" --max_steps=$max_steps "
-CMD+=" $use_fp16"
+CMD+=" --fp16"
 
-LOGFILE=$OUT_DIR/logfile.txt
-echo "$CMD |& tee $LOGFILE"
-time $CMD |& tee $LOGFILE
+echo "$CMD | tee $LOGFILE"
+time $CMD | tee $LOGFILE
