@@ -4,22 +4,20 @@ channels:
   - defaults
   - conda-forge
 dependencies:
-  - python==3.7.*
+  - python==3.8.*
   - pip
   - numpy
   - tqdm
   - h5py 
-  - pytorch
-  - pip:
-      - tensorboard
-      - boto3
-      - requests
-      - six
-      - nltk
-      - wikiextractor
-      - html2text
-      - progressbar
-      - git+https://github.com/gpauloski/loggerplus
-      - git+https://github.com/NVIDIA/dllogger
-      - git+https://github.com/gpauloski/kfac_pytorch@experimental
+  - magma-cuda110
+  - cudatoolkit=11.0
+  - pytorch=1.7.1
+  - tensorboard
+  - scikit-learn
+  - boto3
+  - requests
+  - six
+  - nltk
+  - html2text
+  - progressbar
 

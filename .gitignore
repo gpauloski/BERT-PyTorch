@@ -3,6 +3,7 @@ data/
 cobalt_logs/
 sbatch_logs/
 apex/
+kfac_pytorch/
 
 # Initially taken from Github's Python gitignore file
 

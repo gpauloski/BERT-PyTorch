@@ -1,0 +1,5 @@
+wikiextractor==3.0.4
+git+https://github.com/gpauloski/loggerplus
+git+https://github.com/NVIDIA/dllogger
+git+https://github.com/gpauloski/kfac_pytorch@experimental
+

@@ -44,13 +44,16 @@ The major differences between this version and the NVIDIA implementation are:
 
 ## Quickstart Guide
 
-### **1. Build conda environment**
+### **1. Create Conda environment**
+
 ```
-$ conda env create --file environment.yml
+$ conda create -n bert-pytorch python=3.8
 $ conda activate bert-pytorch
+$ conda env update --name bert-pytorch --file environment.yml
+$ pip install -r requirements.txt
 ```
 
-Install NVIDIA APEX. Note this step requires `nvcc` and may fail if done on systems without a GPU (i.e. install APEX on a compute node).
+Install NVIDIA APEX. Note this step requires `nvcc` and may fail if done on systems without a GPU (i.e. you may need to install on a compute node).
 ```
 $ git clone https://github.com/NVIDIA/apex
 $ cd apex
@@ -104,10 +107,18 @@ The paths and environment setups are examples so you will need to update the scr
 For members of this project only (you will not have access to the premade dataset otherwise)! 
 
 ### 1. Build conda environment
-Perform this step in an interactive session on a compute node: `qsub -A $PROJECT_NAME -I -q full-node -n $NODE_COUNT -t $TIME`.
+
 ```
-$ conda env create --file environment.yml
+$ source /lus/theta-fs0/software/thetagpu/conda/pt_master/2020-11-25/mconda3/setup.sh
+$ conda create -n bert-pytorch python=3.8
 $ conda activate bert-pytorch
+$ conda env update --name bert-pytorch --file environment.yml
+$ pip install -r requirements.txt
+```
+
+Install NVIDIA APEX. Note this step requires `nvcc` and may fail if done on systems without a GPU.
+Start an interactive session on a compute node to install APEX: `qsub -A $PROJECT_NAME -I -q full-node -n $NODE_COUNT -t $TIME`.
+```
 $ git clone https://github.com/NVIDIA/apex
 $ cd apex
 $ pip install -v --disable-pip-version-check --no-cache-dir --global-option="--cpp_ext" --global-option="--cuda_ext" ./
@@ -165,6 +176,15 @@ To monitor training with TensorBoard, see the [Theta TensorBoard Instructions](h
 
 ### Finetuning
 
+## FAQ
+
+### **free(): invalid pointer on Theta**
+
+Generally this is related to PyTorch being compiled without MAGMA.
+Try installing PyTorch via pip instead of Conda.
+```
+pip install torch==1.7.1+cu110 torchvision==0.8.2+cu110 torchaudio===0.7.2 -f https://download.pytorch.org/whl/torch_stable.html
+```
 
 ## TODO
 
