@@ -79,9 +79,14 @@ export OMP_NUM_THREADS=$((NUM_THREADS / NGPUS))
 echo Launching torch.distributed: nproc_per_node=$NGPUS, nnodes=$NNODES, master_addr=$MASTER, local_rank=$LOCAL_RANK, OMP_NUM_THREADS=$OMP_NUM_THREADS, host=$HOSTNAME
 
 
-python -m torch.distributed.launch \
-    --nproc_per_node=$NGPUS --nnodes=$NNODES \
-    --node_rank=$LOCAL_RANK --master_addr=$MASTER \
-    run_pretraining.py --config_file=$CONFIG --input_dir=$INPUT \
-         --output_dir $OUTPUT --vocab_file $VOCAB
-
+if [[ "$NNODES" -eq 1 ]]; then
+    python -m torch.distributed.launch --nproc_per_node=$NGPUS \
+        run_pretraining.py --config_file=$CONFIG --input_dir=$INPUT \
+            --output_dir $OUTPUT --vocab_file $VOCAB
+else
+    python -m torch.distributed.launch \
+        --nproc_per_node=$NGPUS --nnodes=$NNODES \
+        --node_rank=$LOCAL_RANK --master_addr=$MASTER \
+        run_pretraining.py --config_file=$CONFIG --input_dir=$INPUT \
+             --output_dir $OUTPUT --vocab_file $VOCAB
+fi

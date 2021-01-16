@@ -29,21 +29,21 @@ NGPUS=8
 # Note we need to activate conda on the node as well
 RANK=0
 if [[ "$NNODES" -eq 1 ]]; then
-    python -m torch.distributed.launch --nproc_per_node=$NGPUS \
-        run_pretraining.py --config_file $CONFIG --input_dir=$DATA \
-            --output_dir $OUTPUT_DIR --vocab_file $VOCAB_FILE
+    ./scripts/launch_pretraining.sh \
+		--ngpus $NGPUS --nnodes $NNODES --config $CONFIG --input $DATA \
+		--output $OUTPUT_DIR --vocab $VOCAB_FILE
 else
     for NODE in $RANKS; do
-    	echo "Launching rank=$RANK, node=$NODE"
-    	if [[ "$RANK" -eq 0 ]]; then
-    		./scripts/launch_pretraining.sh \
-    			--ngpus $NGPUS --nnodes $NNODES --master $MASTER_RANK \
-    			--rank $RANK --config $CONFIG --input $DATA --output $OUTPUT_DIR \
+		echo "Launching rank=$RANK, node=$NODE"
+		if [[ "$RANK" -eq 0 ]]; then
+			./scripts/launch_pretraining.sh \
+				--ngpus $NGPUS --nnodes $NNODES --master $MASTER_RANK \
+				--rank $RANK --config $CONFIG --input $DATA --output $OUTPUT_DIR \
                 --vocab $VOCAB_FILE &
-    	else
+		else
             ssh $NODE "cd $PWD; ./scripts/launch_pretraining.sh --ngpus $NGPUS --nnodes $NNODES --master $MASTER_RANK --rank $RANK --config $CONFIG --input $DATA --output $OUTPUT_DIR --vocab $VOCAB_FILE" &
-    	fi
-    	RANK=$((RANK+1))
+		fi
+		RANK=$((RANK+1))
     done
 fi
 
