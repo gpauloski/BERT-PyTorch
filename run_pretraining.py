@@ -275,7 +275,8 @@ def prepare_model(args):
 
     model = DDP(model, device_ids=[args.local_rank])
 
-    criterion = BertPretrainingCriterion(config.vocab_size)
+    criterion = BertPretrainingCriterion(config.vocab_size, 
+            args.ignore_next_sentence)
 
     return model, checkpoint, global_steps, criterion, args
 
@@ -345,7 +346,7 @@ def prepare_optimizers(args, model, checkpoint, global_steps):
             accumulate_data=False,
             compute_factor_in_hook=True,
             distribute_layer_factors=False,
-            grad_scaler=scaler,
+            #grad_scaler=scaler,
         )
 
         lrs = Scheduler(preconditioner, warmup=args.warmup_proportion, 
