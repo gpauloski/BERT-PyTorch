@@ -200,7 +200,9 @@ class BertConfig(object):
                  max_position_embeddings=512,
                  type_vocab_size=2,
                  initializer_range=0.02,
-                 output_all_encoded_layers=False):
+                 output_all_encoded_layers=False,
+                 next_sentence=False,
+                 **kwargs):
         """Constructs BertConfig.
 
         Args:
@@ -222,6 +224,7 @@ class BertConfig(object):
                 (e.g., 512 or 1024 or 2048).
             type_vocab_size: The vocabulary size of the `token_type_ids` passed into
                 `BertModel`.
+            next_sentence: Boolean determining if next sentence prediction is being used.
             initializer_range: The sttdev of the truncated_normal_initializer for
                 initializing all weight matrices.
         """
@@ -244,6 +247,7 @@ class BertConfig(object):
             self.type_vocab_size = type_vocab_size
             self.initializer_range = initializer_range
             self.output_all_encoded_layers = output_all_encoded_layers
+            self.next_sentence = next_sentence
         else:
             raise ValueError("First argument must be either a vocabulary size (int)"
                              "or the path to a pretrained model config file (str)")
@@ -338,23 +342,32 @@ class BertEmbeddings(nn.Module):
         super(BertEmbeddings, self).__init__()
         self.word_embeddings = nn.Embedding(config.vocab_size, config.hidden_size)
         self.position_embeddings = nn.Embedding(config.max_position_embeddings, config.hidden_size)
-        self.token_type_embeddings = nn.Embedding(config.type_vocab_size, config.hidden_size)
+        if config.next_sentence:
+            self.token_type_embeddings = nn.Embedding(config.type_vocab_size, config.hidden_size)
+        else:
+            self.token_type_embeddings = None
 
         # self.LayerNorm is not snake-cased to stick with TensorFlow model variable name and be able to load
         # any TensorFlow checkpoint file
         self.LayerNorm = BertLayerNorm(config.hidden_size, eps=1e-12)
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
 
-    def forward(self, input_ids, token_type_ids):
+    def forward(self, input_ids, token_type_ids=None):
         seq_length = input_ids.size(1)
         position_ids = torch.arange(seq_length, dtype=torch.long, device=input_ids.device)
         position_ids = position_ids.unsqueeze(0).expand_as(input_ids)
 
         words_embeddings = self.word_embeddings(input_ids)
         position_embeddings = self.position_embeddings(position_ids)
-        token_type_embeddings = self.token_type_embeddings(token_type_ids)
 
-        embeddings = words_embeddings + position_embeddings + token_type_embeddings
+        embeddings = words_embeddings + position_embeddings
+        
+        if self.token_type_embeddings is not None:
+            if token_type_ids is None:
+                raise ValueError('Missing optional argument \'token_type_ids\''
+                        'which is required when next_sentence=True')
+            embeddings = embeddings + self.token_type_embeddings(token_type_ids)
+
         embeddings = self.LayerNorm(embeddings)
         embeddings = self.dropout(embeddings)
         return embeddings
@@ -590,11 +603,17 @@ class BertPreTrainingHeads(nn.Module):
     def __init__(self, config, bert_model_embedding_weights):
         super(BertPreTrainingHeads, self).__init__()
         self.predictions = BertLMPredictionHead(config, bert_model_embedding_weights)
-        self.seq_relationship = nn.Linear(config.hidden_size, 2)
+        if config.next_sentence:
+            self.seq_relationship = nn.Linear(config.hidden_size, 2)
+        else:
+            self.seq_relationship = None
 
-    def forward(self, sequence_output, pooled_output):
+    def forward(self, sequence_output, pooled_output=None):
         prediction_scores = self.predictions(sequence_output)
-        seq_relationship_score = self.seq_relationship(pooled_output)
+        if self.seq_relationship is not None:
+            seq_relationship_score = self.seq_relationship(pooled_output)
+        else:
+            seq_relationship_score = None
         return prediction_scores, seq_relationship_score
 
 
@@ -808,7 +827,10 @@ class BertModel(BertPreTrainedModel):
         super(BertModel, self).__init__(config)
         self.embeddings = BertEmbeddings(config)
         self.encoder = BertEncoder(config)
-        self.pooler = BertPooler(config)
+        if config.next_sentence:
+            self.pooler = BertPooler(config)
+        else:
+            self.pooler = None
         self.apply(self.init_bert_weights)
         self.output_all_encoded_layers = config.output_all_encoded_layers
 
@@ -830,8 +852,13 @@ class BertModel(BertPreTrainedModel):
 
         embedding_output = self.embeddings(input_ids, token_type_ids)
         encoded_layers = self.encoder(embedding_output, extended_attention_mask)
-        sequence_output = encoded_layers[-1]
-        pooled_output = self.pooler(sequence_output)
+
+        if self.pooler is not None:
+            sequence_output = encoded_layers[-1]
+            pooled_output = self.pooler(sequence_output)
+        else:
+            pooled_output = None
+
         if not self.output_all_encoded_layers:
             encoded_layers = encoded_layers[-1:]
         return encoded_layers, pooled_output

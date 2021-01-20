@@ -64,17 +64,16 @@ signal.signal(signal.SIGTERM, signal_handler)
 
 
 class BertPretrainingCriterion(torch.nn.Module):
-    def __init__(self, vocab_size, ignore_next_sentence=False):
+    def __init__(self, vocab_size):
         super(BertPretrainingCriterion, self).__init__()
         self.loss_fn = torch.nn.CrossEntropyLoss(ignore_index=-1)
         self.vocab_size = vocab_size
-        self.ignore_next_sentence=ignore_next_sentence
 
-    def forward(self, prediction_scores, seq_relationship_score, masked_lm_labels,
-                next_sentence_labels):
+    def forward(self, prediction_scores, masked_lm_labels,
+            seq_relationship_score=None, next_sentence_labels=None):
         masked_lm_loss = self.loss_fn(prediction_scores.view(-1, self.vocab_size),
                                       masked_lm_labels.view(-1))
-        if not self.ignore_next_sentence:
+        if seq_relationship_score is not None and next_sentence_labels is not None:
             next_sentence_loss = self.loss_fn(seq_relationship_score.view(-1, 2),
                                               next_sentence_labels.view(-1))
             return masked_lm_loss + next_sentence_loss
@@ -95,17 +94,12 @@ def parse_arguments():
                         help="The output dir for checkpoints and logging.")
     parser.add_argument("--model_config_file", default=None, type=str,
                         help="The BERT model config")
-    parser.add_argument("--vocab_file", default=None, type=str,
-                        help="The vocab file used for encoding the dataset. "
-                             "Only needed if dataset is not already masked.")
 
     ## Dynamic Masking Parameters
     parser.add_argument("--masked_token_fraction", type=float, default=0.2,
                         help='Fraction of tokens to mask per sequence')
     parser.add_argument("--max_predictions_per_seq", type=int, default=80,
                         help='Maximum masked tokens per sequence')
-    parser.add_argument("--uppercase", action='store_true', default=False,
-                        help='Use cased vocab')
 
     ## Training Configuration
     parser.add_argument('--disable_progress_bar', default=False, action='store_true',
@@ -123,8 +117,6 @@ def parse_arguments():
                         help="random seed for initialization")
     parser.add_argument('--fp16', default=False, action='store_true',
                         help="Use PyTorch AMP training")
-    parser.add_argument('--ignore_next_sentence', default=False, action='store_true',
-                        help="Skip next sentence prediction tasks in loss")
 
     ## Hyperparameters
     parser.add_argument("--learning_rate", default=5e-5, type=float,
@@ -275,8 +267,7 @@ def prepare_model(args):
 
     model = DDP(model, device_ids=[args.local_rank])
 
-    criterion = BertPretrainingCriterion(config.vocab_size, 
-            args.ignore_next_sentence)
+    criterion = BertPretrainingCriterion(config.vocab_size)
 
     return model, checkpoint, global_steps, criterion, args
 
@@ -372,14 +363,14 @@ def prepare_dataset(args, checkpoint):
                 input_files.append(str(path))
 
     with open(args.model_config_file) as f:
-        vocab_size = json.load(f)['vocab_size']
+        configs = json.load(f)
+        vocab_size = configs['vocab_size']
+        vocab_file = configs['vocab_file']
+        lowercase = configs['lowercase']
 
     mask_token_id = None
-    # TODO: change if we add support for different tokenizers
-    if args.vocab_file is not None and args.vocab_file != '':
-        tokenizer = tokenization.BertTokenizer(args.vocab_file,
-                do_lower_case=not args.uppercase)
-        mask_token_id = tokenizer.convert_tokens_to_ids(['[MASK]'])[0]
+    tokenizer = tokenization.BertTokenizer(vocab_file, do_lower_case=lowercase)
+    mask_token_id = tokenizer.convert_tokens_to_ids(['[MASK]'])[0]
 
     dataset = ShardedPretrainingDataset(input_files, mask_token_id, 
             args.max_predictions_per_seq, args.masked_token_fraction,
@@ -427,8 +418,8 @@ def forward_backward_pass(model, criterion, scaler, batch, divisor,
                     attention_mask=input_mask)
             loss = criterion(
                     prediction_scores,
-                    seq_relationship_score,
                     masked_lm_labels,
+                    seq_relationship_score,
                     next_sentence_labels)
     else:
         prediction_scores, seq_relationship_score = model(
@@ -437,8 +428,8 @@ def forward_backward_pass(model, criterion, scaler, batch, divisor,
                 attention_mask=input_mask)
         loss = criterion(
                 prediction_scores,
-                seq_relationship_score,
                 masked_lm_labels,
+                seq_relationship_score,
                 next_sentence_labels)
 
     loss = loss / divisor
@@ -568,7 +559,9 @@ if __name__ == "__main__":
     torch.cuda.manual_seed(args.seed + args.local_rank)
 
     args = setup_training(args)
-    logger.info(args)
+    logger.info('TRAINING CONFIG: {}'.format(args))
+    with open(args.model_config_file) as f:
+        logger.info('MODEL CONFIG: {}'.format(json.load(f)))
 
     start_time = time.time()
     global_steps, train_time = main(args)

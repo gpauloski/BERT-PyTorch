@@ -5,9 +5,13 @@
   "hidden_size": 1024,
   "initializer_range": 0.02,
   "intermediate_size": 4096,
+  "lowercase": true,
   "max_position_embeddings": 512,
+  "model_name": "bert-large-uncased",
+  "next_sentence": true,
   "num_attention_heads": 16,
   "num_hidden_layers": 24,
   "type_vocab_size": 2,
-  "vocab_size": 30522
+  "vocab_size": 30522,
+  "vocab_file": "/lus/theta-fs0/projects/SuperBERT/datasets/download/google_pretrained_weights/uncased_L-24_H-1024_A-16/vocab.txt"
 }

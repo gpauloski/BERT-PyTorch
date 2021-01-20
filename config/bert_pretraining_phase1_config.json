@@ -1,5 +1,5 @@
 {
-	"model_config_file": "config/bert_large_config.json",
+	"model_config_file": "config/bert_large_uncased_config.json",
 	"fp16": true,
 	"max_predictions_per_seq": 20,
 	"learning_rate": 6e-3,
