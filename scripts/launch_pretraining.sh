@@ -4,19 +4,10 @@ NGPUS=1
 NNODES=1
 LOCAL_RANK=""
 MASTER=""
-CONFIG=""
-INPUT=""
-OUTPUT=""
-VOCAB=""
+KWARGS=""
 
-while [ "$1" != "" ]; do
-    PARAM=`echo $1 | awk -F= '{print $1}'`
-    VALUE=`echo $1 | sed 's/^[^=]*=//g'`
-    if [[ "$VALUE" == "$PARAM" ]]; then
-        shift
-        VALUE=$1
-    fi
-    case $PARAM in
+while [[ "$1" == -* ]]; do
+    case "$1" in
         -h|--help)
             echo "USAGE: ./launch_node_torch_imagenet.sh"
             echo "  -h,--help           Display this help message"
@@ -24,38 +15,31 @@ while [ "$1" != "" ]; do
             echo "  -n,--nnodes [int]   Number of nodes this script is launched on (default: 1)"
             echo "  -r,--rank   [int]   Node rank (default: \"\")"
             echo "  -m,--master [str]   Address of master node (default: \"\")"
-            echo "  -c,--config [path]  Config file for training (default: \"\")"
-            echo "  -i,--input  [path]  Input data directory (default: \"\")"
-            echo "  -o,--output [path]  Output data directoy (default: \"\")"
-            echo "  -v,--vocab  [path]  Vocab file (default: \"\")"
+            echo "  -a,--kwargs [str]   Training arguments. MUST BE LAST ARG! (default: \"\")"
             exit 0
         ;;
         -N|--ngpus)
-            NGPUS=$VALUE
+            shift
+            NGPUS="$1"
         ;;
         -n|--nnodes)
-            NNODES=$VALUE
+            shift
+            NNODES="$1"
         ;;
         -m|--master)
-            MASTER=$VALUE
+            shift
+            MASTER="$1"
         ;;
         -r|--rank)
-            LOCAL_RANK=$VALUE
+            shift
+            LOCAL_RANK="$1"
         ;;
-        -c|--config)
-            CONFIG=$VALUE
-        ;;
-        -i|--input)
-            INPUT=$VALUE
-        ;;
-        -o|--output)
-            OUTPUT=$VALUE
-        ;;
-        -v|--vocab)
-            VOCAB=$VALUE
+        -a|--kwargs)
+            shift
+            KWARGS="$@"
         ;;
         *)
-          echo "ERROR: unknown parameter \"$PARAM\""
+          echo "ERROR: unknown parameter \"$1\""
           exit 1
         ;;
     esac
@@ -81,12 +65,10 @@ echo Launching torch.distributed: nproc_per_node=$NGPUS, nnodes=$NNODES, master_
 
 if [[ "$NNODES" -eq 1 ]]; then
     python -m torch.distributed.launch --nproc_per_node=$NGPUS \
-        run_pretraining.py --config_file=$CONFIG --input_dir=$INPUT \
-            --output_dir $OUTPUT --vocab_file $VOCAB
+        run_pretraining.py $KWARGS
 else
     python -m torch.distributed.launch \
         --nproc_per_node=$NGPUS --nnodes=$NNODES \
         --node_rank=$LOCAL_RANK --master_addr=$MASTER \
-        run_pretraining.py --config_file=$CONFIG --input_dir=$INPUT \
-             --output_dir $OUTPUT --vocab_file $VOCAB
+        run_pretraining.py $KWARGS
 fi

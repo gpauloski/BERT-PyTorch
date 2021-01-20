@@ -17,8 +17,9 @@ else
 	DATA=/lus/theta-fs0/projects/SuperBERT/datasets/encoded/bert_masked_wikicorpus_en/phase2
 fi
 
-VOCAB_FILE=/lus/theta-fs0/projects/SuperBERT/datasets/download/google_pretrained_weights/uncased_L-24_H-1024_A-16/vocab.txt
-OUTPUT_DIR=results/bert_pretraining
+OUTPUT_DIR=results/test
+# Add any argument overrides for the config file to $KWARGS
+KWARGS=" --input_dir $DATA --output_dir $OUTPUT_DIR --config_file $CONFIG "
 
 MASTER_RANK=$(head -n 1 $COBALT_NODEFILE)
 RANKS=$(tr '\n' ' ' < $COBALT_NODEFILE)
@@ -30,18 +31,16 @@ NGPUS=8
 RANK=0
 if [[ "$NNODES" -eq 1 ]]; then
     ./scripts/launch_pretraining.sh \
-		--ngpus $NGPUS --nnodes $NNODES --config $CONFIG --input $DATA \
-		--output $OUTPUT_DIR --vocab $VOCAB_FILE
+		--ngpus $NGPUS --nnodes $NNODES --kwargs $KWARGS 
 else
     for NODE in $RANKS; do
 		echo "Launching rank=$RANK, node=$NODE"
 		if [[ "$RANK" -eq 0 ]]; then
 			./scripts/launch_pretraining.sh \
 				--ngpus $NGPUS --nnodes $NNODES --master $MASTER_RANK \
-				--rank $RANK --config $CONFIG --input $DATA --output $OUTPUT_DIR \
-                --vocab $VOCAB_FILE &
+				--rank $RANK --kwargs $KWARGS &
 		else
-            ssh $NODE "cd $PWD; ./scripts/launch_pretraining.sh --ngpus $NGPUS --nnodes $NNODES --master $MASTER_RANK --rank $RANK --config $CONFIG --input $DATA --output $OUTPUT_DIR --vocab $VOCAB_FILE" &
+            ssh $NODE "cd $PWD; ./scripts/launch_pretraining.sh --ngpus $NGPUS --nnodes $NNODES --master $MASTER_RANK --rank $RANK --kwargs $KWARGS" &
 		fi
 		RANK=$((RANK+1))
     done
