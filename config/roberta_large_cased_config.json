@@ -11,6 +11,7 @@
   "next_sentence": false,
   "num_attention_heads": 16,
   "num_hidden_layers": 24,
+  "tokenizer": "wordpiece",
   "type_vocab_size": 2,
   "vocab_size": 28996,
   "vocab_file": "/lus/theta-fs0/projects/SuperBERT/datasets/download/google_pretrained_weights/cased_L-24_H-1024_A-16/vocab.txt"

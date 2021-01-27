@@ -4,7 +4,7 @@ import multiprocessing as mp
 import os
 import random
 import time
-import tokenization
+import tokenizers
 
 from pathlib import Path
 
@@ -35,16 +35,26 @@ class TrainingSample(object):
         return s
 
 
-def get_documents_from_file(input_file):
+def convert_to_unicode(text):
+    """Converts `text` to Unicode (if it's not already), assuming utf-8 input."""
+    if isinstance(text, str):
+        return text
+    elif isinstance(text, bytes):
+        return text.decode("utf-8", "ignore")
+    else:
+        raise ValueError("Unsupported string type: %s" % (type(text)))
+
+
+def get_documents_from_file(input_file, tokenizer):
     documents = [[]]
     with open(input_file, "r") as reader:
         for line in reader:
-            line = tokenization.convert_to_unicode(line).strip()
+            line = convert_to_unicode(line).strip()
             if not line:
                 # Empty lines are used as document delimiters so we start
                 # a new document
                 documents.append([])
-            tokens = tokenizer.tokenize(line)
+            tokens = tokenizer.encode(line, add_special_tokens=False).tokens
             if tokens:
                 documents[-1].append(tokens)
     # Remove empty documents
@@ -159,7 +169,7 @@ def create_samples_from_document(document_idx, documents, max_seq_len,
 
 def create_samples(input_file, tokenizer, max_seq_len, next_seq_prob,
         short_seq_prob):
-    documents = get_documents_from_file(input_file)
+    documents = get_documents_from_file(input_file, tokenizer)
     samples = []
     for i in range(len(documents)):
         samples.extend(
@@ -177,10 +187,16 @@ def write_samples_to_hdf5(output_file, samples, tokenizer, max_seq_len):
     while samples:
         # We pop here to save memory, we no longer need the sample after this
         sample = samples.pop()
-        input_id = tokenizer.convert_tokens_to_ids(sample.sequence)
+        input_id = [tokenizer.token_to_id(tid) for tid in sample.sequence]
+        #input_id = tokenizer.encode(sample.sequence, is_pretokenized=True, 
+        #        add_special_tokens=False).ids
+        assert len(input_id) == len(sample.sequence)
+        assert None not in input_id
         while len(input_id) < max_seq_len:
             input_id.append(0)
-        assert len(input_id) == max_seq_len
+        assert len(input_id) == max_seq_len, ('len(input_id)={}, max_seq_len={} '
+                'len(sequence)={}'.format(
+                len(input_id), max_seq_len, len(sample.sequence)))
         input_ids.append(input_id)
         special_token_positions.append(sample.special_token_positions)
         next_sent_labels.append(1 if sample.is_random_next else 0)
@@ -229,6 +245,9 @@ if __name__ == '__main__':
                              'If 0, skips next next sequence prediction')
     parser.add_argument("--uppercase", action='store_true', default=False,
                         help='Use uppercase.')
+    parser.add_argument('--tokenizer', type=str, default='wordpiece',
+                        choices=['wordpiece', 'bpe'],
+                        help='Tokenizer to use')
     parser.add_argument('--processes', type=int, default=4,
                         help="Number of processes to use")
 
@@ -257,8 +276,23 @@ if __name__ == '__main__':
     args.output_dir = os.path.join(args.output_dir, output_prefix)
     if not os.path.isdir(args.output_dir):
         os.makedirs(args.output_dir)
-    tokenizer = tokenization.BertTokenizer(args.vocab_file,
-            do_lower_case=not args.uppercase, max_len=args.max_seq_len)
+
+    if args.tokenizer == 'wordpiece':
+        tokenizer = tokenizers.BertWordPieceTokenizer(
+            vocab=args.vocab_file,
+            clean_text=True,
+            handle_chinese_chars=True,
+            lowercase=not args.uppercase,
+        )
+    elif args.tokenizer == 'bpe':
+        tokenizer = tokenizers.ByteLevelBPETokenizer(
+            vocab=args.vocab_file,
+            add_prefix_space=True,
+            lowercase=not args.uppercase,
+            trim_offsets=True,
+        )
+    #tokenizer.enable_padding(length=args.max_seq_len)
+    #tokenizer.enable_truncation(max_length=args.max_seq_len)
 
     params = []
     for i, ifile in enumerate(input_files):

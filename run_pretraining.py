@@ -37,12 +37,12 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 from tqdm import tqdm
 from pathlib import Path
 
-import bert.modeling as modeling
-import bert.tokenization as tokenization
+import src.modeling as modeling
 
-from bert.dataset import ShardedPretrainingDataset, DistributedSampler
-from bert.schedulers import PolyWarmUpScheduler, LinearWarmUpScheduler
-from bert.utils import is_main_process, get_world_size, get_rank
+from src.dataset import ShardedPretrainingDataset, DistributedSampler
+from src.schedulers import PolyWarmUpScheduler, LinearWarmUpScheduler
+from src.tokenization import get_wordpiece_tokenizer, get_bpe_tokenizer
+from src.utils import is_main_process, get_world_size, get_rank
 
 try:
     from torch.cuda.amp import autocast, GradScaler
@@ -367,10 +367,17 @@ def prepare_dataset(args, checkpoint):
         vocab_size = configs['vocab_size']
         vocab_file = configs['vocab_file']
         lowercase = configs['lowercase']
+        tokenizer = configs['tokenizer']
 
     mask_token_id = None
-    tokenizer = tokenization.BertTokenizer(vocab_file, do_lower_case=lowercase)
-    mask_token_id = tokenizer.convert_tokens_to_ids(['[MASK]'])[0]
+    if tokenizer == 'wordpiece':
+        tokenizer = get_wordpiece_tokenizer(vocab_file, uppercase=not lowercase)
+    elif tokenizer == 'bpe':
+        tokenizer = get_bpe_tokenizer(vocab_file, uppercase=not lowercase)
+    else:
+        raise ValueError('Unknown tokenizer \'{}\'. Options are '
+                         '\'wordpiece\' and \'bpe\''.format(tokenizer))
+    mask_token_id = tokenizer.token_to_id('[MASK]')
 
     dataset = ShardedPretrainingDataset(input_files, mask_token_id, 
             args.max_predictions_per_seq, args.masked_token_fraction,
