@@ -17,7 +17,7 @@ else
 	DATA=/lus/theta-fs0/projects/SuperBERT/datasets/encoded/bert_masked_wikicorpus_en/phase2
 fi
 
-OUTPUT_DIR=results/test
+OUTPUT_DIR=results/bert_large_uncased_pretraining
 # Add any argument overrides for the config file to $KWARGS
 KWARGS=" --input_dir $DATA --output_dir $OUTPUT_DIR --config_file $CONFIG "
 

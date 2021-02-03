@@ -2,13 +2,12 @@
 
 MODEL_CHECKPOINT=${1:-"results/bert_pretraining/ckpt_8601.pt"}
 OUTPUT_DIR=${2:-"results/bert_pretraining"}
+CONFIG_FILE=${3:-"config/bert_large_uncased_config.json"}
 
 DATA_DIR="/lus/theta-fs0/projects/SuperBERT/datasets/download"
 SQUAD_DIR="$DATA_DIR/squad/v1.1"
-VOCAB_FILE="$DATA_DIR/google_pretrained_weights/uncased_L-24_H-1024_A-16/vocab.txt"
 
 BERT_MODEL="bert-large-uncased"
-CONFIG_FILE="config/bert_large_config.json"
 
 NGPUS=1
 BATCH_SIZE=4
@@ -42,7 +41,6 @@ CMD+=" --num_train_epochs=2 "
 CMD+=" --max_seq_length=384 "
 CMD+=" --doc_stride=128 "
 CMD+=" --output_dir=$OUTPUT_DIR "
-CMD+=" --vocab_file=$VOCAB_FILE "
 CMD+=" --config_file=$CONFIG_FILE "
 CMD+=" --fp16"
 
