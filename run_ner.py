@@ -1,16 +1,19 @@
 import argparse
+import json
 import os
 import torch
 
 import src.modeling as modeling
 import src.tokenization as tokenization
 import numpy as np
+import torch.nn.functional as F
 
 from apex.optimizers import FusedAdam
 from sklearn.metrics import f1_score
 from torch.optim.lr_scheduler import LambdaLR
+from torch import nn
 from tqdm import tqdm
-from utils.ner_dataset import NERDataset
+from src.ner_dataset import NERDataset
 
 
 def parse_arguments():
@@ -30,11 +33,12 @@ def parse_arguments():
                         help="The BERT model config")
     parser.add_argument("--model_checkpoint", type=str, required=True,
                         help="Path to pretrained model checkpoint")
-    parser.add_argument("--vocab_file", default=None, type=str, required=True,
-                        help="The vocab file used for training the model")
+    parser.add_argument("--vocab_file", default=None, type=str, required=False,
+                        help="The vocab file used for training the model"
+                             "Can be passed via model_config_file instead")
     parser.add_argument("--uppercase", default=False, action="store_true",
                         help="Use uppercase model and tokenizer")
-    parser.add_argument('--tokenizer', type=str, default='wordpiece',
+    parser.add_argument('--tokenizer', type=str, default=None,
                         choices=['wordpiece', 'bpe'],
                         help='Tokenization Method')
 
@@ -42,6 +46,8 @@ def parse_arguments():
                         help="random seed for initialization")
     parser.add_argument('--lr', type=float, default=0.2,
                         help="random seed for initialization")
+    parser.add_argument('--clip_grad', type=float, default=5.0,
+                        help="Gradient norm clipping")
     parser.add_argument('--batch_size', type=int, default=32,
                         help="Batch size")
     parser.add_argument('--max_seq_len', type=int, default=512,
@@ -58,10 +64,26 @@ def get_data(args):
     kwargs = {'num_workers': 4, 'pin_memory': True} if args.cuda else {}
     kwargs['batch_size'] = args.batch_size
 
-    if tokenizer == 'wordpiece':
+    if args.vocab_file is None:
+        with open(args.model_config_file) as f:
+            configs = json.load(f)
+            if 'vocab_file' not in configs:
+                raise ValueError('vocab_file must be provided in the model '
+                                 'config or as a command line option')
+            args.vocab_file = configs['vocab_file'] 
+    
+    if args.tokenizer is None:
+        with open(args.model_config_file) as f:
+            configs = json.load(f)
+            if 'tokenizer' not in configs:
+                raise ValueError('tokenizer must be provided in the model '
+                                 'config or as a command line option')
+            args.tokenizer = configs['tokenizer'] 
+
+    if args.tokenizer == 'wordpiece':
         tokenizer = tokenization.get_wordpiece_tokenizer(
                 args.vocab_file, uppercase=args.uppercase)
-    elif tokenizer == 'bpe':
+    elif args.tokenizer == 'bpe':
         tokenizer = tokenization.get_bpe_tokenizer(
                 args.vocab_file, uppercase=args.uppercase)
 
@@ -105,6 +127,7 @@ class Metric():
 def train(model, optimizer, train_loader, epoch, args):
     model.train()
     loss_metric = Metric()
+    loss_fn = torch.nn.CrossEntropyLoss()
 
     with tqdm(total=len(train_loader),
               bar_format='{l_bar}{bar:8}{r_bar}',
@@ -114,15 +137,17 @@ def train(model, optimizer, train_loader, epoch, args):
                 batch = [b.cuda() for b in batch]
             
             optimizer.zero_grad()
-            sequences, masks, labels = batch
-            loss = model(sequences, token_type_ids=torch.zeros_like(masks), 
+            sequences, labels, masks = batch
+            loss = model(sequences, token_type_ids=torch.zeros_like(masks), #None, 
                     attention_mask=masks, labels=labels)
             loss.backward()
+            nn.utils.clip_grad_norm_(parameters=model.parameters(), 
+                    max_norm=args.clip_grad)
             optimizer.step()
             
             loss_metric.update(loss.item())
 
-            t.set_postfix_str('train_loss: {:.5f}, lr: {:.5f}'.format(
+            t.set_postfix_str('train_loss: {:.5f}, lr: {:.2e}'.format(
                     loss_metric.avg, optimizer.param_groups[0]['lr']))
             t.update(1)
 
@@ -132,28 +157,41 @@ def evaluate(model, data_loader, args):
     model.eval()
     
     loss_metric = Metric()
-    y_true = []
-    y_pred = []
+    loss_fn = torch.nn.CrossEntropyLoss()
+
+    predictions = []
+    true_labels = []
 
     for batch in data_loader:
         if args.cuda:
             batch = [b.cuda() for b in batch]
-        sequences, masks, labels = batch
-        type_ids = torch.zeros_like(masks)
-        loss = model(sequences, token_type_ids=type_ids, 
+        sequences, labels, masks = batch
+        loss = model(sequences, token_type_ids=torch.zeros_like(masks), 
                 attention_mask=masks, labels=labels)
         # pred is shape (batch_size, max_seq_len, n_labels)
-        pred = model(sequences, token_type_ids=type_ids, attention_mask=masks)
+        logits = model(sequences, token_type_ids=torch.zeros_like(masks), 
+                attention_mask=masks)
 
         loss_metric.update(loss)
         
-        pred = pred.detach().cpu().numpy()
+        logits = logits.detach().cpu().numpy()
         labels = labels.detach().cpu().numpy()
 
-        y_pred.extend([idx for indices in np.argmax(pred, axis=2) for idx in indices])
-        y_true.extend([idx for indices in labels for idx in indices])
+        predictions.extend([list(p) for p in np.argmax(logits, axis=2)])
+        true_labels.extend([list(l) for l in labels])
 
-    return loss_metric.avg, f1_score(y_true, y_pred, average='macro')
+    tag_values = {i: tag for i, tag in enumerate(args.labels)}
+
+    pred_tags = []
+    valid_tags = []
+
+    for p, l in zip(predictions, true_labels):
+        for p_i, l_i in zip(p, l):
+            if l_i > 0:
+                pred_tags.append(tag_values[p_i])
+                valid_tags.append(tag_values[l_i])
+
+    return loss_metric.avg, f1_score(pred_tags, valid_tags, average='macro')
 
 
 if __name__ == '__main__':

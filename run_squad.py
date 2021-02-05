@@ -852,7 +852,7 @@ def main():
                         type=str,
                         help="Location to cache train feaures. Will default to the dataset directory")
     parser.add_argument('--tokenizer',
-                        default='wordpiece',
+                        default=None,
                         choices=['wordpiece', 'bpe'],
                         help='tokenizer to use')
 
@@ -866,6 +866,14 @@ def main():
                 raise ValueError('vocab_file must be provided in the model '
                                  'config or as a command line option')
             args.vocab_file = configs['vocab_file']
+
+    if args.tokenizer is None:
+        with open(args.model_config_file) as f:
+            configs = json.load(f)
+            if 'tokenizer' not in configs:
+                raise ValueError('tokenizer must be provided in the model '
+                                 'config or as a command line option')
+            args.tokenizer = configs['tokenizer'] 
 
     if args.local_rank == -1 or args.no_cuda:
         device = torch.device("cuda" if torch.cuda.is_available() and not args.no_cuda else "cpu")

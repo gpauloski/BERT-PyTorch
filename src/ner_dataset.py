@@ -10,43 +10,56 @@ class Sample():
         self.sentence = sentence
         self.labels = labels
 
-    def encoded(self, tokenizer, label_to_id):
-        encoded_sentence = []
-        encoded_labels = []
+    def encoded(self, tokenizer, label_to_id, max_seq_len):
+        tokenized_seq = []
+        labels = []
+
         for word, label in zip(self.sentence, self.labels):
-            encoded = tokenizer.encode(word, add_special_tokens=False).ids
-            label_ids = [label_to_id[label]] * len(encoded)
-            encoded_sentence.extend(encoded)
-            encoded_labels.extend(label_ids)
-        assert len(encoded_sentence) == len(encoded_labels)
-        return encoded_sentence, encoded_labels
+            tokens = tokenizer.encode(word, add_special_tokens=False).tokens
+            tokenized_seq.extend(tokens)
+            labels.extend([label] * len(tokens))
+
+        assert len(tokenized_seq) == len(labels)
+
+        if len(tokenized_seq) > max_seq_len - 2:
+            tokenized_seq = tokenized_seq[:max_seq_len - 2]
+            labels = labels[:max_seq_len - 2]
+
+        tokenized_seq.insert(0, '[CLS]')
+        tokenized_seq.append('[SEP]')
+
+        encoded_seq = [tokenizer.token_to_id(t) for t in tokenized_seq]
+        encoded_labels = [label_to_id[l] for l in labels]
+
+        encoded_labels.insert(0, -100)
+        encoded_labels.append(-100)
+        mask = [1] * len(encoded_labels)
+
+        while len(encoded_seq) < max_seq_len:
+            encoded_seq.append(0)
+            encoded_labels.append(0)
+            mask.append(0)
+
+        assert len(encoded_labels) == len(encoded_seq) == len(mask) == max_seq_len
+
+        return encoded_seq, encoded_labels, mask
 
 
 class NERDataset(torch.utils.data.Dataset):
     def __init__(self, filename, tokenizer, labels, max_seq_len):
         self.samples = self._parse_file(filename)
         self.tokenizer = tokenizer
-        self.label_to_id = {label: i for i, label in enumerate(labels)}
+        self.label_to_idx = {label: i for i, label in enumerate(labels)}
         self.max_seq_len = max_seq_len
 
     def __len__(self):
         return len(self.samples)
 
     def __getitem__(self, idx):
-        sentence, labels = self.samples[idx].encoded(
-                self.tokenizer, self.label_to_id)
-        mask = [1] * len(sentence)
-        if len(sentence) > self.max_seq_len:
-            sentence = sentence[:self.max_seq_len]
-            labels = labels[:self.max_seq_len]
-            mask = mask[:self.max_seq_len]
-        else:
-            while len(sentence) < self.max_seq_len:
-                sentence.append(0)
-                labels.append(0)
-                mask.append(0)
+        sentence, labels, mask = self.samples[idx].encoded(
+                self.tokenizer, self.label_to_idx, self.max_seq_len)
         
-        return torch.LongTensor(sentence), torch.LongTensor(mask), torch.LongTensor(labels)
+        return torch.LongTensor(sentence), torch.LongTensor(labels), torch.LongTensor(mask)
 
     def _parse_file(self, filename):
         samples = []

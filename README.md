@@ -191,6 +191,6 @@ pip install torch==1.7.1+cu110 torchvision==0.8.2+cu110 torchaudio===0.7.2 -f ht
 - [ ] Benchmarking performance for README
 - [ ] Add option to limit maximum file size for `format.py` instead of choosing `n_shard`.
 - [ ] Go through TODOs in repo
-- [ ] Add byte-pair encoding option
-- [ ] write config file to output directory
+- [x] Add byte-pair encoding option
 - [x] specify log file prefix as argument
+- [ ] whole word masking in encode data
