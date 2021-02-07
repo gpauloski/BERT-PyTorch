@@ -868,7 +868,7 @@ def main():
             args.vocab_file = configs['vocab_file']
 
     if args.tokenizer is None:
-        with open(args.model_config_file) as f:
+        with open(args.config_file) as f:
             configs = json.load(f)
             if 'tokenizer' not in configs:
                 raise ValueError('tokenizer must be provided in the model '
