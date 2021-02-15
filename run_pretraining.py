@@ -191,14 +191,15 @@ def setup_training(args):
     logger.init(
         handlers=[
             logger.StreamHandler(verbose=is_main_process()),
-            logger.FileHandler(os.path.join(args.output_dir, 
-                                            args.log_prefix + '.txt'),
-                               overwrite=False, verbose=is_main_process()),
-            logger.TorchTensorboardHandler(args.output_dir,
-                                           verbose=is_main_process()),
-            logger.CSVHandler(os.path.join(args.output_dir, 
-                                           args.log_prefix + '_metrics.csv'),
-                              overwrite=False, verbose=is_main_process()),
+            logger.FileHandler(
+                    os.path.join(args.output_dir, args.log_prefix + '.txt'),
+                    overwrite=False, verbose=is_main_process()),
+            logger.TorchTensorboardHandler(
+                    os.path.join(args.output_dir, 'tensorboard'),
+                    verbose=is_main_process()),
+            logger.CSVHandler(
+                    os.path.join(args.output_dir, args.log_prefix + '_metrics.csv'),
+                    overwrite=False, verbose=is_main_process()),
         ]
     )
 
@@ -242,7 +243,8 @@ def prepare_model(args):
     checkpoint = None
     global_steps = 0
     args.resume_step = 0
-    checkpoint_names = [f for f in os.listdir(args.output_dir) if f.endswith(".pt")]
+    checkpoint_names = [f for f in os.listdir(args.model_output_dir)
+                        if f.endswith(".pt")]
     if len(checkpoint_names) > 0:
         args.resume_step = max([int(x.split('.pt')[0].split('_')[1].strip())
                            for x in checkpoint_names])
@@ -460,6 +462,7 @@ def main(args):
     global timeout_sent
 
     model, checkpoint, global_steps, criterion, args = prepare_model(args)
+    args.model_output_dir = os.path.join(args.output_dir, 'pretrain_ckpts')
     optimizer, preconditioner, lr_schedulers, scaler = prepare_optimizers(
             args, model, checkpoint, global_steps)
     dataloader, datasampler = prepare_dataset(args, checkpoint)
@@ -518,7 +521,8 @@ def main(args):
                     logger.info('Saving checkpoint: global_steps={}'.format(
                             global_steps + args.previous_phase_end_step))
                     model_to_save = model.module if hasattr(model, 'module') else model
-                    output_save_file = os.path.join(args.output_dir,
+                    output_save_file = os.path.join(
+                            args.model_output_dir,
                             "ckpt_{}.pt".format(global_steps + args.previous_phase_end_step))
                     model_dict = {
                         'model': model_to_save.state_dict(),
