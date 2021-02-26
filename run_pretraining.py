@@ -185,8 +185,9 @@ def setup_training(args):
     args.device = torch.device("cuda", args.local_rank)
     torch.distributed.init_process_group(backend='nccl', init_method='env://')
 
+    args.model_output_dir = os.path.join(args.output_dir, 'pretrain_ckpts')
     if is_main_process():
-        os.makedirs(args.output_dir, exist_ok=True)
+        os.makedirs(args.model_output_dir, exist_ok=True)
 
     logger.init(
         handlers=[
@@ -250,8 +251,8 @@ def prepare_model(args):
                            for x in checkpoint_names])
 
         checkpoint = torch.load(
-                os.path.join(args.output_dir, "ckpt_{}.pt".format(args.resume_step)),
-                map_location="cpu"
+            os.path.join(args.model_output_dir, "ckpt_{}.pt".format(args.resume_step)),
+            map_location="cpu"
         )
 
         model.load_state_dict(checkpoint['model'], strict=False)
@@ -462,7 +463,6 @@ def main(args):
     global timeout_sent
 
     model, checkpoint, global_steps, criterion, args = prepare_model(args)
-    args.model_output_dir = os.path.join(args.output_dir, 'pretrain_ckpts')
     optimizer, preconditioner, lr_schedulers, scaler = prepare_optimizers(
             args, model, checkpoint, global_steps)
     dataloader, datasampler = prepare_dataset(args, checkpoint)
