@@ -24,7 +24,6 @@ import multiprocessing
 import numpy as np
 import os
 import random
-import signal
 import time
 import warnings
 import torch
@@ -49,18 +48,6 @@ try:
     TORCH_FP16 = True
 except:
     TORCH_FP16 = False
-
-
-# Track whether a SIGTERM (cluster time up) has been handled
-timeout_sent = False
-
-# handle SIGTERM sent from the scheduler and mark so we
-# can gracefully save & exit
-def signal_handler(sig, frame):
-    global timeout_sent
-    timeout_sent = True
-
-signal.signal(signal.SIGTERM, signal_handler)
 
 
 class BertPretrainingCriterion(torch.nn.Module):
@@ -104,7 +91,7 @@ def parse_arguments():
     ## Training Configuration
     parser.add_argument('--disable_progress_bar', default=False, action='store_true',
                         help='Disable tqdm progress bar')
-    parser.add_argument('--num_steps_per_checkpoint', type=int, default=100,
+    parser.add_argument('--num_steps_per_checkpoint', type=int, default=200,
                         help="Number of update steps between writing checkpoints.")
     parser.add_argument('--skip_checkpoint', default=False, action='store_true',
                         help="Whether to save checkpoints")
@@ -133,6 +120,8 @@ def parse_arguments():
                         help="Per-GPU batch size for training.")
     parser.add_argument("--max_steps", default=1000, type=float,
                         help="Total number of training steps to perform.")
+    parser.add_argument("--steps", default=1000, type=float,
+                        help="Steps to perform this session.")
     parser.add_argument("--previous_phase_end_step", default=0, type=int,
                         help="Final step of previous phase")
 
@@ -145,7 +134,7 @@ def parse_arguments():
                         help='iters between kfac cov ops')
     parser.add_argument('--kfac_stat_decay', type=float, default=0.95,
                         help='Alpha value for covariance accumulation')
-    parser.add_argument('--kfac_damping', type=float, default=0.001,
+    parser.add_argument('--kfac_damping', type=float, default=0.003,
                         help='KFAC damping factor')
     parser.add_argument('--kfac_kl_clip', type=float, default=0.001,
                         help='KFAC KL gradient clip')
@@ -250,10 +239,10 @@ def prepare_model(args):
         args.resume_step = max([int(x.split('.pt')[0].split('_')[1].strip())
                            for x in checkpoint_names])
 
-        checkpoint = torch.load(
-            os.path.join(args.model_output_dir, "ckpt_{}.pt".format(args.resume_step)),
-            map_location="cpu"
-        )
+        checkpoint_path = os.path.join(
+            args.model_output_dir, "ckpt_{}.pt".format(args.resume_step))
+        logger.info(f'Loading checkpoint {checkpoint_path}')
+        checkpoint = torch.load(checkpoint_path, map_location="cpu")
 
         model.load_state_dict(checkpoint['model'], strict=False)
 
@@ -333,14 +322,16 @@ def prepare_optimizers(args, model, checkpoint, global_steps):
             skip_layers=args.kfac_skip_layers,
             # BERT calls KFAC very infrequently so no need to optimize for
             # communication. Optimize for memory instead.
-            comm_method=kfac.CommMethod.MEM_OPT,
+            comm_method=kfac.CommMethod.HYBRID_OPT,
+            grad_worker_fraction=0.5,
+            inv_dtype=torch.float16,
             # Compute the factors and update the running averages during the
             # forward backward pass b/c we are using grad accumulation but
             # not accumulating the input/output data
             accumulate_data=False,
             compute_factor_in_hook=True,
             distribute_layer_factors=False,
-            #grad_scaler=scaler,
+            grad_scaler=scaler,
         )
 
         lrs = Scheduler(preconditioner, warmup=args.warmup_proportion, 
@@ -462,68 +453,51 @@ def forward_backward_pass(model, criterion, scaler, batch, divisor,
 def main(args):
     global timeout_sent
 
-    model, checkpoint, global_steps, criterion, args = prepare_model(args)
+    model, checkpoint, global_step, criterion, args = prepare_model(args)
     optimizer, preconditioner, lr_schedulers, scaler = prepare_optimizers(
-            args, model, checkpoint, global_steps)
+            args, model, checkpoint, global_step)
     dataloader, datasampler = prepare_dataset(args, checkpoint)
 
     model.train()
     most_recent_ckpts_paths = []
     average_loss = 0.0
     epoch = 0
-    training_steps = 0
+    # step = number of forward/backward passes this training session
+    # optimization_steps = number of weight updates this session
+    # global_step = global number of weight updates on model
+    step = 0
+    optimization_steps = 0
     train_time_start = time.time()
 
     if checkpoint is not None and 'epoch' in checkpoint:
         epoch = checkpoint['epoch']
 
+    if not args.disable_progress_bar:
+        train_iter = tqdm(dataloader, disable=not is_main_process())
+    else:
+        train_iter = dataloader
+
     # Note: We loop infinitely over epochs, termination is handled 
     #       via iteration count
     while True:
-        if not args.disable_progress_bar:
-            train_iter = tqdm(dataloader, disable=not is_main_process())
-        else:
-            train_iter = dataloader
-
         for batch in train_iter:
-            sync_grads = False
-            if args.accumulation_steps == 1 or (training_steps > 0 
-                    and training_steps % args.accumulation_steps == 0):
-                sync_grads = True
-
-            batch = [t.to(args.device) for t in batch]
-            loss = forward_backward_pass(model, criterion, scaler, batch,
-                    args.accumulation_steps, sync_grads=sync_grads)
-            average_loss += loss.item()
-
-            if sync_grads:
-                for lrs in lr_schedulers:
-                    lrs.step()
-                take_optimizer_step(optimizer, preconditioner, 
-                        model, scaler)
-                global_steps += 1
-                logger.log(tag='train',
-                           step=global_steps+args.previous_phase_end_step,
-                           epoch=epoch,
-                           average_loss=average_loss,
-                           step_loss=loss.item() * args.accumulation_steps,
-                           learning_rate=optimizer.param_groups[0]['lr'])
-                average_loss = 0
-
-            if (global_steps >= args.max_steps or timeout_sent or
-                    (training_steps > 0 and training_steps % (
-                    args.num_steps_per_checkpoint * args.accumulation_steps
-                    ) == 0)):
-                if global_steps >= args.max_steps or timeout_sent:
-                    final_time = time.time() - train_time_start
+            if (
+                global_step >= args.max_steps
+                or optimization_steps >= args.steps
+                or (
+                    optimization_steps > 0
+                    and step % (
+                        args.accumulation_steps * args.num_steps_per_checkpoint) == 0
+                )
+            ):
                 if is_main_process() and not args.skip_checkpoint:
-                    # Save a trained model
-                    logger.info('Saving checkpoint: global_steps={}'.format(
-                            global_steps + args.previous_phase_end_step))
+                    logger.info('Saving checkpoint: global_step={}'.format(
+                            global_step + args.previous_phase_end_step))
                     model_to_save = model.module if hasattr(model, 'module') else model
                     output_save_file = os.path.join(
-                            args.model_output_dir,
-                            "ckpt_{}.pt".format(global_steps + args.previous_phase_end_step))
+                        args.model_output_dir,
+                        "ckpt_{}.pt".format(global_step + args.previous_phase_end_step)
+                    )
                     model_dict = {
                         'model': model_to_save.state_dict(),
                         'optimizer': optimizer.state_dict(),
@@ -541,12 +515,35 @@ def main(args):
                         ckpt_to_be_removed = most_recent_ckpts_paths.pop(0)
                         os.remove(ckpt_to_be_removed)
 
-            # Exiting the training due to hitting max steps, or being sent a
-            # timeout from the cluster scheduler
-            if global_steps >= args.max_steps or timeout_sent:
-                return global_steps, final_time
-            
-            training_steps += 1
+                # Exit training if we have hit session step limit or global step limit
+                if global_step >= args.max_steps or optimization_steps >= args.steps:
+                    final_time = time.time() - train_time_start
+                    return global_step, final_time
+
+            # Only sync gradients across replics if we are also going
+            # to do an optimization step
+            sync_grads = step > 0 and step % args.accumulation_steps == 0
+
+            batch = [t.to(args.device) for t in batch]
+            loss = forward_backward_pass(model, criterion, scaler, batch,
+                    args.accumulation_steps, sync_grads=sync_grads)
+            average_loss += loss.item()
+            step += 1
+
+            if sync_grads:
+                for lrs in lr_schedulers:
+                    lrs.step()
+                take_optimizer_step(optimizer, preconditioner, 
+                        model, scaler)
+                global_step += 1
+                optimization_steps += 1
+                logger.log(tag='train',
+                           step=global_step+args.previous_phase_end_step,
+                           epoch=epoch,
+                           average_loss=average_loss,
+                           step_loss=loss.item() * args.accumulation_steps,
+                           learning_rate=optimizer.param_groups[0]['lr'])
+                average_loss = 0
 
         epoch += 1
 

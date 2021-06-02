@@ -49,12 +49,14 @@ if __name__ == '__main__':
             trim_offsets=True,
         )
 
+    print('Starting training', flush=True)
     tokenizer.train(
         input_files,
         vocab_size=args.size,
         show_progress=True,
         special_tokens=args.special_tokens,
     )
+    print('Finished training', flush=True)
 
     os.makedirs(os.path.dirname(args.output), exist_ok=True)
 
@@ -72,7 +74,8 @@ if __name__ == '__main__':
         vocab.pop(vocab.index(args.pad_token))
     vocab.insert(0, args.pad_token)
 
-    with open(args.output, 'w') as f:
+    with open(args.output, 'w', encoding='utf-8') as f:
         for word in vocab:
             f.write(word + '\n')
+    print('Vocab written to file', flush=True)
 

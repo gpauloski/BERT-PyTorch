@@ -124,6 +124,24 @@ class Metric():
         return self.total / self.n
 
 
+def compute_metrics(predictions, labels, idx_to_label):
+    predictions = np.argmax(predictions, axis=2)
+
+    # Remove ignored index (special tokens)
+    true_predictions = [
+        [idx_to_label[p] for (p, l) in zip(prediction, label) if l > 0]
+                         for prediction, label in zip(predictions, labels)
+    ]
+    true_labels = [
+        [idx_to_label[l] for (p, l) in zip(prediction, label) if l > 0]
+                         for prediction, label in zip(predictions, labels)
+    ]
+
+    true_predictions = [x for l in true_predictions for x in l]
+    true_labels = [x for l in true_labels for x in l]
+    return f1_score(true_labels, true_predictions, average='macro')
+
+
 def train(model, optimizer, train_loader, epoch, args):
     model.train()
     loss_metric = Metric()
@@ -159,8 +177,8 @@ def evaluate(model, data_loader, args):
     loss_metric = Metric()
     loss_fn = torch.nn.CrossEntropyLoss()
 
-    predictions = []
-    true_labels = []
+    predictions = None
+    true_labels = None
 
     for batch in data_loader:
         if args.cuda:
@@ -177,25 +195,21 @@ def evaluate(model, data_loader, args):
         logits = logits.detach().cpu().numpy()
         labels = labels.detach().cpu().numpy()
 
-        predictions.extend([list(p) for p in np.argmax(logits, axis=2)])
-        true_labels.extend([list(l) for l in labels])
+        if predictions is None:
+            predictions = logits
+            true_labels = labels
+        else:
+            predictions = np.concatenate((predictions, logits))
+            true_labels = np.concatenate((true_labels, labels))
 
-    tag_values = {i: tag for i, tag in enumerate(args.labels)}
+    idx_map = {i: tag for i, tag in enumerate(args.labels, start=1)}
 
-    pred_tags = []
-    valid_tags = []
-
-    for p, l in zip(predictions, true_labels):
-        for p_i, l_i in zip(p, l):
-            if l_i > 0:
-                pred_tags.append(tag_values[p_i])
-                valid_tags.append(tag_values[l_i])
-
-    return loss_metric.avg, f1_score(pred_tags, valid_tags, average='macro')
+    return loss_metric.avg, compute_metrics(predictions, true_labels, idx_map)
 
 
 if __name__ == '__main__':
     args = parse_arguments()
+    print('NER Finetuning: args = {}'.format(args))
 
     torch.manual_seed(args.seed)
     args.cuda = torch.cuda.is_available()
@@ -207,7 +221,7 @@ if __name__ == '__main__':
     if config.vocab_size % 8 != 0:
         config.vocab_size += 8 - (config.vocab_size % 8)
     modeling.ACT2FN["bias_gelu"] = modeling.bias_gelu_training
-    model = modeling.BertForTokenClassification(config, len(args.labels))
+    model = modeling.BertForTokenClassification(config, len(args.labels) + 1)
     model.load_state_dict(
             torch.load(args.model_checkpoint, map_location='cpu')['model'], 
             strict=False)
@@ -238,9 +252,10 @@ if __name__ == '__main__':
         if val_loader is not None:
             loss, f1 = evaluate(model, val_loader, args)
             print('val_loss: {:.5f}, val_f1: {:.5f}'.format(loss, f1))
+            #print('val_loss: {:.5f}, classification: \n{}'.format(loss, f1))
         scheduler.step()
 
     if test_loader is not None:
         loss, f1 = evaluate(model, test_loader, args)
         print('test_loss: {:.5f}, test_f1: {:.5f}'.format(loss, f1))
-
+        #print('test_loss: {:.5f}, classification: \n{}'.format(loss, f1))

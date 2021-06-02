@@ -409,10 +409,11 @@ class DistributedSampler(torch.utils.data.distributed.DistributedSampler):
 
     def load_state_dict(self, state_dict):
         if state_dict['total_size'] != self.total_size:
-            warnings.warn('The number of samples in the Sampler has changed. '
-                          'Skipping restoring sampler state. If the dataset '
-                          'was changed and the sampler should be reset, '
-                          'ignore this message')
+            warnings.warn(f'The number of samples in the Sampler has changed. '
+                          f'Skipping restoring sampler state. Expected size '
+                          f'{self.total_size} but got size {state_dict["total_size"]}. '
+                          f'If the dataset was changed and the sampler should be '
+                          f'reset, ignore this message')
             return
         if state_dict['num_replicas'] != self.num_replicas:
             warnings.warn('The number of replicas has changed so the resume '
