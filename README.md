@@ -14,6 +14,7 @@ This repository provides scripts for pretraining and finetuning BERT in PyTorch.
 - [Performance](#performance)
   * [Pretraining](#pretraining)
   * [Finetuning](#finetuning)
+- [Evaluation](#evaluation)
 
 
 ## Overview
@@ -165,6 +166,7 @@ To monitor training with TensorBoard, see the [Theta TensorBoard Instructions](h
 
 ## Pretraining Methods
 
+
 ### Standard BERT Pretraining
 
 ### RoBERTa Pretraining
@@ -176,6 +178,37 @@ To monitor training with TensorBoard, see the [Theta TensorBoard Instructions](h
 
 ### Finetuning
 
+## Evaluation
+
+We will be evaluating the performance of our models on various downstream tasks, including NER, text classification and question answering.
+They will be compared against BERT, SciBERT models. Described below are the datasets that are 
+used to evaluate and compare our models with the SoTA models.
+
+### NER
+    
+* [CoNLL-2003](https://huggingface.co/datasets/conll2003): Named entities include names, locations, organizations, and other miscellaneous entities
+* [JNLPBA](https://huggingface.co/datasets/jnlpba): IOB tags for named entities in a microbiology corpus called GENIA
+* [NCBI-Disease](https://www.ncbi.nlm.nih.gov/research/bionlp/Data/disease/): Maps disease mentions in biomedical literature to disease concepts
+* [BC5CDR](https://biocreative.bioinformatics.udel.edu/media/store/files/2015/BC5CDRoverview.pdf): Contains chemicals, diseases, and chemical-disease interactions
+  
+### Text Classification
+* [ACL-ARC](https://web.eecs.umich.edu/~lahiri/acl_arc.html): assign intent labels to sentences from scientific papers that cite other papers
+* [SciCite](https://allenai.org/data/scicite): same as above 
+* [Paper Field (Microsoft Academic Graph)](https://docs.microsoft.com/en-us/academic-services/graph/): Microsoft Academic Graph maps papers to one of 7 fields of study (geography, politics, economics,
+  business, sociology, medicine, and psychology)
+
+### Dependency Parsing:
+* [GENIA](https://watermark.silverchair.com/btg1023.pdf?token=AQECAHi208BE49Ooan9kkhW_Ercy7Dm3ZL_9Cf3qfKAc485ysgAAAuowggLmBgkqhkiG9w0BBwagggLXMIIC0wIBADCCAswGCSqGSIb3DQEHATAeBglghkgBZQMEAS4wEQQMzQ9pUCiESWuV-qiPAgEQgIICnYuEFGa75kr0MvMVaQgmOvYFmQLGTWnQEg-VIo7vz4kSS4IWK2u84OQcpqfISy6B9V3cag-h42qToJqRDWYfAPwX4sGHdmpWdhfM_8dBWiAE_9NTSBFaLyhChRmrwX9BmIMlE984HLeDjMoqdqtKeK8KU1xJyKWyTTl_DuvN_NFiVwPKM33UgvvUuMkJ-GqOOV5jFYOhYGmP_3Gc46-LYddKFe2uY-hvp4p1pKOmhy00CfZdAEFFvoRgoydL58x6E8rid-wUtJC5ln7OVhXJoOfmTSyDa6xiDDxONeilkwXGFgqmG7lpoVAwAc931mCL2lAshhlksvZzWKYrgT4OQlNmE2ktiI2sg2AHJ59R-ClaOxx6hSeKOn169Z3JPzT6wLC1DXrWtCagN0Ip7I4MZ_KAKULnxzxEPd31qc9w-LPWIPSTTHZ8eFr-MuoyJay8K2ZktSFVEJLkYr4h3LrJHUkQUIETtIGAAEFUW-u-I9H-IyaSISo7S5quLfgp5ZQEzUD3pwJvwW9lXo6hFg5MyArsKw8k9a-xYNHezUyFYU3-Kda0IXONkd5Misdj8P7Zksf_1Mww7jZsx7PwyvM8iwZbdF5TbqiMS5BS0kCrw0SNd-01PYme66NbpIKR-_-xMlAyYeV9sY45cPSd8FloVuSKKkSSkIjDnzFIR9NomXgej7z2GI0gIfmpvp4Q6HQ5LxPWZzxGiTY9rsBvJGfmImmFLbcCkXnrESmRNNDvbvh19XIp9-yf-ILr1GRMsICFM5kviuoPeVpGmuZV7pYaSfAScoBEXge26i__bGK1Dpqj41VuXBIbkPiSqGRNPF1vV1H2FLT-8vQr6LVw1PQ2xaCjTEApuiies3EHK_5KLMzWcnlZshj9icHQf7M5qA): 
+  collection of MEDLINE articles with the MeSH terms _human_, _blood cell_, and _transcription factor_ annotated with
+  GENIA ontology descriptors
+### Relation Extraction:
+* [ChemProt](https://pubmed.ncbi.nlm.nih.gov/26876982/): chemical-protein-disease annotation
+* [SciERC](https://paperswithcode.com/dataset/scierc): scientific abstracts annotated with relations, entities, and 
+coreference clusters
+
+### Scientific Textual Entailment:
+* [AI2 SciTail](https://www.aaai.org/ocs/index.php/AAAI/AAAI18/paper/view/17368): "in the wild" entailment dataset 
+derived from MCQs and their answers 
 ## FAQ
 
 ### **free(): invalid pointer on Theta**
