@@ -15,6 +15,7 @@ This repository provides scripts for pretraining and finetuning BERT in PyTorch.
   * [Pretraining](#pretraining)
   * [Finetuning](#finetuning)
 - [Evaluation](#evaluation)
+- [Comparisons](#comparisons)
 
 
 ## Overview
@@ -209,6 +210,36 @@ coreference clusters
 ### Scientific Textual Entailment:
 * [AI2 SciTail](https://www.aaai.org/ocs/index.php/AAAI/AAAI18/paper/view/17368): "in the wild" entailment dataset 
 derived from MCQs and their answers 
+
+## Comparisons
+
+### SciBERT 
+
+1. Clone SciBERT Repo and create environment 
+```
+git clone https://github.com/allenai/scibert.git
+conda create -n scibert
+source activate scibert
+pip install overrides==3.1.0
+pip install -r scibert/requirements.txt
+pip install scibert/ 
+```
+
+2. Download models
+```
+mkdir scibert/models/
+cd scibert/models/
+wget "https://s3-us-west-2.amazonaws.com/ai2-s2-research/scibert/pytorch_models/scibert_scivocab_cased.tar"
+wget "https://s3-us-west-2.amazonaws.com/ai2-s2-research/scibert/pytorch_models/scibert_scivocab_uncased.tar"
+tar -xvf scibert_scivocab_cased.tar
+tar -xvf scibert_scivocab_uncased.tar
+cd ..
+```
+
+3. Modify script `scripts/train_allennlp_local.sh` to update the task and dataset. E.g. `TASK="ner"` and `DATASET="bc5cdr"`.
+
+4. Finetune the model `./scripts/train_allennlp_local.sh output_dir
+`
 ## FAQ
 
 ### **free(): invalid pointer on Theta**
@@ -218,6 +249,7 @@ Try installing PyTorch via pip instead of Conda.
 ```
 pip install torch==1.7.1+cu110 torchvision==0.8.2+cu110 torchaudio===0.7.2 -f https://download.pytorch.org/whl/torch_stable.html
 ```
+
 
 ## TODO
 
