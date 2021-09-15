@@ -27,12 +27,13 @@ class Sample():
 
         tokenized_seq.insert(0, '[CLS]')
         tokenized_seq.append('[SEP]')
+        labels.insert(0, '[SPC]')
+        labels.append('[SPC]')
 
         encoded_seq = [tokenizer.token_to_id(t) for t in tokenized_seq]
-        encoded_labels = [label_to_id[l] for l in labels]
+        encoded_labels = [label_to_id[l] if l != '[SPC]' else -100 
+                for l in labels]
 
-        encoded_labels.insert(0, -100)
-        encoded_labels.append(-100)
         mask = [1] * len(encoded_labels)
 
         while len(encoded_seq) < max_seq_len:
@@ -42,24 +43,25 @@ class Sample():
 
         assert len(encoded_labels) == len(encoded_seq) == len(mask) == max_seq_len
 
-        return encoded_seq, encoded_labels, mask
+        return tokenized_seq, labels, encoded_seq, encoded_labels, mask
+        #return encoded_seq, encoded_labels, mask
 
 
 class NERDataset(torch.utils.data.Dataset):
     def __init__(self, filename, tokenizer, labels, max_seq_len):
         self.samples = self._parse_file(filename)
         self.tokenizer = tokenizer
-        self.label_to_idx = {label: i for i, label in enumerate(labels)}
+        self.label_to_idx = {label: i for i, label in enumerate(labels, start=1)}
         self.max_seq_len = max_seq_len
 
     def __len__(self):
         return len(self.samples)
 
     def __getitem__(self, idx):
-        sentence, labels, mask = self.samples[idx].encoded(
+        sentence, labels, encoded_sentence, encoded_labels, mask = self.samples[idx].encoded(
                 self.tokenizer, self.label_to_idx, self.max_seq_len)
-        
-        return torch.LongTensor(sentence), torch.LongTensor(labels), torch.LongTensor(mask)
+      
+        return torch.LongTensor(encoded_sentence), torch.LongTensor(encoded_labels), torch.LongTensor(mask)
 
     def _parse_file(self, filename):
         samples = []
