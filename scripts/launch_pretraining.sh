@@ -46,7 +46,9 @@ while [[ "$1" == -* ]]; do
     shift
 done
 
-source /lus/theta-fs0/software/thetagpu/conda/pt_master/2020-11-25/mconda3/setup.sh
+. /etc/profile
+
+source /lus/theta-fs0/software/thetagpu/conda/2021-06-28/mconda3/setup.sh
 conda activate bert-pytorch
 
 if [[ -z "$LOCAL_RANK" ]]; then
