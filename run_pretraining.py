@@ -27,7 +27,12 @@ import random
 import time
 import warnings
 import torch
-import kfac
+
+try:
+    import kfac
+    HAS_KFAC = True
+except ImportError:
+    HAS_KFAC = False
 
 from apex.optimizers import FusedLAMB
 from torch.utils.data import DataLoader
@@ -163,6 +168,9 @@ def parse_arguments():
         for key in configs:
             if key in vars(args) and key not in vars(cli_args):
                 setattr(args, key, configs[key])
+
+    if args.kfac and not HAS_KFAC:
+        raise ValueError('KFAC is enabled but cannot import kfac')
 
     return args
 
