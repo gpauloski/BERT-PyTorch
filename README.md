@@ -45,11 +45,13 @@ The major differences between this version and the NVIDIA implementation are:
 ## Quickstart Guide
 
 ### **1. Create Conda environment**
+Note that the steps for creating a Conda environment will change depending on the machine and software stack available.
+Many systems come with PyTorch Conda environments so it is recommended to clone the provided environment and use that instead.
 
 ```
-$ conda create -n bert-pytorch python=3.8
-$ conda activate bert-pytorch
-$ conda env update --name bert-pytorch --file environment.yml
+$ conda create -n {ENV_NAME} python=3.8
+$ conda activate {ENV_NAME}
+$ conda env update --name {ENV_NAME} --file environment.yml
 $ pip install -r requirements.txt
 ```
 
@@ -77,9 +79,11 @@ Arguments to `run_pretraining.py` can be passed as command line arguments or as 
 Command line arguments take precendence over config file arguments.
 See `python run_pretraining.py --help` for a full list of arguments and their defaults.
 
+Note: these instructions are for PyTorch 1.9 and later.
+
 #### Single-Node Multi-GPU Training
 ```
-$ python -m torch.distributed.launch --nproc_per_node=$GPUS_PER_NODE run_pretraining.py --config_file $PHASE1_CONFIG --input_dir $PHASE1_DATA --output_dir $OUTPUT_DIR
+$ python -m torch.distributed.run --standalone --nnodes=1 --nproc_per_node=$GPUS_PER_NODE run_pretraining.py --config_file $PHASE1_CONFIG --input_dir $PHASE1_DATA --output_dir $OUTPUT_DIR
 ```
 An example `$PHASE1_CONFIG` is provided in `config/bert_pretraining_phase1_config.json`.
 The example configs are tuned for 40GB NVIDIA A100s.
@@ -87,22 +91,23 @@ The training script will recursively find and use all HDF5 files in `$PHASE1_DAT
 Training logs and checkpoints are written to `$OUTPUT_DIR`.
 After phase 1 training is finished, continue with phase 2 by running the same command with the phase 2 config and data paths (the output directory stays the same).
    
-Training logs are written to `$OUTPUT_DIR/log.txt`, and TensorBoard can be used for monitoring with `tensorboard --logdir=$OUTPUT_DIR`.
+Training logs are written to `$OUTPUT_DIR/pretraining_phase1_log.txt`, and TensorBoard can be used for monitoring with `tensorboard --logdir=$OUTPUT_DIR`.
 
 #### Multi-Node Multi-GPU Training
 ```
-$ python -m torch.distributed.launch --node_rank=$RANK --master_addr=$MASTER --nnodes=$NODE_COUNT --nproc_per_node=$GPUS_PER_NODE run_pretraining.py --config $PHASE1_CONFIG --input_dir $PHASE1_DATA --output_dir $OUTPUT_DIR
+$ python -m torch.distributed.run --rdvz_backend=c10d --rdvz_endpoint=$HOSTNODE --nnodes=$NODE_COUNT --nproc_per_node=$GPUS_PER_NODE run_pretraining.py --config $PHASE1_CONFIG --input_dir $PHASE1_DATA --output_dir $OUTPUT_DIR
 ```
-This command must be run on each node where the `--node_rank` is changed appropriately.
-`$MASTER` is the hostname of the first node (e.g. thetagpu08).
+This command must be run on each node and `$HODENODE` is the hostname of the first node (e.g., thetagpu08).
 
 #### Automatic Multi-Node Training
-Example scripts for running pretraining on SLURM or Cobalt clusters are provided in `scripts/run_pretraining.{sbatch,cobalt}`.
+Example scripts for running pretraining on SLURM or Cobalt clusters are provided in `scripts/run_pretraining.{sbatch,cobalt}` (usage instructions are provided at the top of the files).
 The scripts will automatically infer the distributed training configuration from the nodelist and launch the PyTorch distributed processes.
 The paths and environment setups are examples so you will need to update the scripts for your specific needs.
-
+These script can also be run as normal bash scripts (e.g., `./scripts/run_pretraining.cobalt`).
 
 ## ThetaGPU Quickstart
+
+**WARNING**: these instructions are out of date.
 
 For members of this project only (you will not have access to the premade dataset otherwise)! 
 

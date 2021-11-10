@@ -1,56 +1,94 @@
 #!/bin/bash
-
-# Sample Slurm job script
-#   for TACC Longhorn Nodes
-#
-#------------------------------------------------------------------------------
-
-#SBATCH -J bertkfc                 # Job name
-#SBATCH -o sbatch_logs/bertkfc.o%j # Name of stdout output file
+#SBATCH -J bert-pretrain           # Job name
+#SBATCH -o bert-pretrain.o%j       # Name of stdout output file
 #SBATCH -N 16                      # Total # of nodes 
 #SBATCH -n 32                      # Total # of mpi tasks
 #SBATCH -t 48:00:00                # Run time (hh:mm:ss)
-#SBATCH --mail-user=jgpauloski@utexas.edu
+#SBATCH --mail-user={YOUR EMAIL}
 #SBATCH --mail-type=end            # Send email at begin and end of job
 #SBATCH -p v100
 #SBATCH -A Deep-Learning-at-Sca    # Allocation
 
-mkdir -p sbatch_logs
+#   Sample Slurm job script for TACC Longhorn Nodes
+#   
+#   To launch pretraining with this script, first provide the training
+#   config, training data path, and output directory via the CONFIG,
+#   DATA, and OUTPUT_DIR variables at the top of the script.
+#
+#   Run locally on a compute node:
+#
+#     $ ./run_pretraining.sbatch 
+#
+#   Submit as an Sbatch job (edit Sbatch arguments in the #SBATCH directives
+#   at the top of the script):
+#
+#     $ qsub-gpu path/to/run_pretraining.sbatch
+#
+#   Notes: 
+#     - training configuration (e.g., # nodes, # gpus / node, etc.) will be
+#       automatically inferred
+#     - additional arguments to run_pretraining.py can be specified by
+#       including them after run_pretraining.cobalt. E.g.,
+#
+#       $ ./run_pretraining.sbatch --steps 1000 --learning_rate 5e-4
+#
 
-module load conda
-conda activate pytorch
-module unload spectrum_mpi
-module use /home/01255/siliu/mvapich2-gdr/modulefiles/
-module load gcc/7.3.0 
-module load mvapich2-gdr/2.3.4
+PHASE=1
 
-export MV2_USE_CUDA=1
-export MV2_ENABLE_AFFINITY=1
-export MV2_THREADS_PER_PROCESS=2
-export MV2_SHOW_CPU_BINDING=1
-export MV2_CPU_BINDING_POLICY=hybrid
-export MV2_HYBRID_BINDING_POLICY=spread
-export MV2_USE_RDMA_CM=0
-export MV2_SUPPORT_DL=1
+if [[ "$PHASE" -eq 1 ]]; then
+    CONFIG=config/bert_pretraining_phase1_config.json
+    DATA=/lus/theta-fs0/projects/SuperBERT/jgpaul/datasets/encoded/wikibooks/static_masked_30K/sequences_lowercase_max_seq_len_128_next_seq_task_true/
+else
+    CONFIG=config/bert_pretraining_phase1_config.json
+    DATA=/lus/theta-fs0/projects/SuperBERT/jgpaul/datasets/encoded/wikibooks/static_masked_30K/sequences_lowercase_max_seq_len_128_next_seq_task_true/
+fi
 
-HOSTFILE=hostfile
-cat $HOSTFILE
+OUTPUT_DIR=results/bert_large_uncased_wikibooks_pretraining
 
-MASTER_RANK=$(head -n 1 $HOSTFILE)
-NODES=$(< $HOSTFILE wc -l)
-PROC_PER_NODE=4
+# Figure out training environment
+if [[ -z "${SLURM_NODELIST}" ]]; then
+    RANKS=$HOSTNAME
+    NNODES=1
+else
+    NODEFILE=/tmp/nodefile
+    scontrol show hostnames $SLURM_NODELIST > $NODEFILE
+    MASTER_RANK=$(head -n 1 $NODEFILE)
+    RANKS=$(tr '\n' ' ' < $NODEFILE)
+    NNODES=$(< $NODEFILE wc -l)
+fi
 
-# PHASE 1
-mpirun -np $NODES -hostfile $HOSTFILE  bash scripts/launch_pretraining.sh  \
-    --ngpus $PROC_PER_NODE --nnodes $NODES --master $MASTER_RANK \
-    --config config/bert_pretraining_phase1_config.json \
-	--input data/hdf5/lower_case_1_seq_len_128_max_pred_20_masked_lm_prob_0.15_random_seed_12345_dupe_factor_5/wikicorpus_en/ \
-    --output results/bert_pretraining
+# Commands to run prior to the Python script for setting up the environment
+PRELOAD+="module load conda ; "
+PRELOAD+="conda activate pytorch ; "
+PRELOAD+="export OMP_NUM_THREADS=8 ; "
 
-# PHASE 2
-mpirun -np $NODES -hostfile $HOSTFILE  bash scripts/launch_pretraining.sh  \
-    --ngpus $PROC_PER_NODE --nnodes $NODES --master $MASTER_RANK \
-    --config config/bert_pretraining_phase2_config.json \
-	--input data/hdf5/lower_case_1_seq_len_512_max_pred_80_masked_lm_prob_0.15_random_seed_12345_dupe_factor_5/wikicorpus_en/ \
-    --output results/bert_pretraining
+# torchrun launch configuration
+LAUNCHER="python -m torch.distributed.run "
+LAUNCHER+="--nnodes=$NNODES --nproc_per_node=auto --max_restarts 0 "
+if [[ "$NNODES" -eq 1 ]]; then
+    LAUNCHER+="--standalone "
+else
+    LAUNCHER+="--rdzv_backend=c10d --rdzv_endpoint=$MASTER_RANK "
+fi
+
+# Training script and parameters
+CMD="run_pretraining.py --input_dir $DATA --output_dir $OUTPUT_DIR --config_file $CONFIG "
+
+FULL_CMD=" $PRELOAD $LAUNCHER $CMD $@ "
+echo "Training Command: $FULL_CMD"
+
+# Launch the pytorch processes on each worker (use ssh for remote nodes)
+RANK=0
+for NODE in $RANKS; do
+    if [[ "$NODE" == "$HOSTNAME" ]]; then
+        echo "Launching rank $RANK on local node $NODE"
+        eval $FULL_CMD &
+    else
+        echo "Launching rank $RANK on remote node $NODE"
+        ssh $NODE "cd $PWD; $FULL_CMD" &
+    fi
+    RANK=$((RANK+1))
+done
+
+wait
 
