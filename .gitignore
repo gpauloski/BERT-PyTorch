@@ -4,6 +4,7 @@ cobalt_logs/
 sbatch_logs/
 apex/
 kfac_pytorch/
+.deepspeed_env
 
 # Initially taken from Github's Python gitignore file
 
