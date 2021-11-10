@@ -139,3 +139,20 @@ class PolyWarmUpScheduler(LRScheduler):
             return [base_lr * progress / self.warmup for base_lr in self.base_lrs]
         else:
             return [base_lr * ((1.0 - progress) ** self.degree) for base_lr in self.base_lrs]
+
+
+def warmup_exp_decay_exp(
+    global_step,
+    decay_rate,
+    decay_steps,
+    total_steps,
+    warmup=0.002,
+    degree=2.0
+):
+    x = global_step / total_steps
+    warmup_end = warmup * total_steps
+    if warmup == 0.0:
+        return 1.0
+    elif x < warmup:
+        return (x / warmup)**degree
+    return decay_rate**((global_step - warmup_end) / decay_steps)

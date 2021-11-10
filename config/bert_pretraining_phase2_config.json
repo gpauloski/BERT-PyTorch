@@ -8,8 +8,10 @@
 	"local_batch_size": 16,
 	"max_steps": 1563,
 	"previous_phase_end_step": 7038,
+    "num_steps_per_checkpoint": 200,
 	"kfac": false,
 	"kfac_inv_interval": 10,
 	"kfac_factor_interval": 1,
-	"log_prefix": "phase2_log"
+	"log_prefix": "pretraining_phase2_log",
+    "disable_progress_bar": true
 }

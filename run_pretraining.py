@@ -24,17 +24,22 @@ import multiprocessing
 import numpy as np
 import os
 import random
-import time
 import warnings
 import torch
-import kfac
 
+try:
+    import kfac
+    HAS_KFAC = True
+except ImportError:
+    HAS_KFAC = False
+
+from time import perf_counter
+from tqdm import tqdm
+from pathlib import Path
 from apex.optimizers import FusedLAMB
 from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
 from torch.nn.parallel import DistributedDataParallel as DDP
-from tqdm import tqdm
-from pathlib import Path
 
 import src.modeling as modeling
 
@@ -148,6 +153,8 @@ def parse_arguments():
                         help='local rank for distributed training')
 
     args = parser.parse_args()
+    if 'LOCAL_RANK' in os.environ:
+        args.local_rank = int(os.environ['LOCAL_RANK'])
 
     # Hacky way to figure out to distinguish arguments that were found
     # in sys.argv[1:]
@@ -163,6 +170,9 @@ def parse_arguments():
         for key in configs:
             if key in vars(args) and key not in vars(cli_args):
                 setattr(args, key, configs[key])
+
+    if args.kfac and not HAS_KFAC:
+        raise ValueError('KFAC is enabled but cannot import kfac')
 
     return args
 
@@ -451,8 +461,6 @@ def forward_backward_pass(model, criterion, scaler, batch, divisor,
 
 
 def main(args):
-    global timeout_sent
-
     model, checkpoint, global_step, criterion, args = prepare_model(args)
     optimizer, preconditioner, lr_schedulers, scaler = prepare_optimizers(
             args, model, checkpoint, global_step)
@@ -467,7 +475,8 @@ def main(args):
     # global_step = global number of weight updates on model
     step = 0
     optimization_steps = 0
-    train_time_start = time.time()
+    samples = 0
+    train_time_start = perf_counter()
 
     if checkpoint is not None and 'epoch' in checkpoint:
         epoch = checkpoint['epoch']
@@ -480,7 +489,10 @@ def main(args):
     # Note: We loop infinitely over epochs, termination is handled 
     #       via iteration count
     while True:
+        datasampler.set_epoch(epoch)
         for batch in train_iter:
+            if step == 1:  # start perf timer on second step to skip initialize
+                train_perf_time = perf_counter()
             if (
                 global_step >= args.max_steps
                 or optimization_steps >= args.steps
@@ -517,7 +529,7 @@ def main(args):
 
                 # Exit training if we have hit session step limit or global step limit
                 if global_step >= args.max_steps or optimization_steps >= args.steps:
-                    final_time = time.time() - train_time_start
+                    final_time = perf_counter() - train_time_start
                     return global_step, final_time
 
             # Only sync gradients across replics if we are also going
@@ -528,6 +540,8 @@ def main(args):
             loss = forward_backward_pass(model, criterion, scaler, batch,
                     args.accumulation_steps, sync_grads=sync_grads)
             average_loss += loss.item()
+            if step > 0:  # skip first step due to initialization
+                samples += get_world_size() * args.local_batch_size
             step += 1
 
             if sync_grads:
@@ -537,12 +551,17 @@ def main(args):
                         model, scaler)
                 global_step += 1
                 optimization_steps += 1
-                logger.log(tag='train',
-                           step=global_step+args.previous_phase_end_step,
-                           epoch=epoch,
-                           average_loss=average_loss,
-                           step_loss=loss.item() * args.accumulation_steps,
-                           learning_rate=optimizer.param_groups[0]['lr'])
+                logger.log(
+                    tag='train',
+                    step=global_step+args.previous_phase_end_step,
+                    epoch=epoch,
+                    average_loss=average_loss,
+                    step_loss=loss.item() * args.accumulation_steps,
+                    learning_rate=optimizer.param_groups[0]['lr'],
+                    samples_per_second=
+                        samples / (perf_counter() - train_perf_time)
+                        if samples > 0 else 0
+                )
                 average_loss = 0
 
         epoch += 1
@@ -571,9 +590,9 @@ if __name__ == "__main__":
     with open(args.model_config_file) as f:
         logger.info('MODEL CONFIG: {}'.format(json.load(f)))
 
-    start_time = time.time()
+    start_time = perf_counter()
     global_steps, train_time = main(args)
-    runtime = time.time() - start_time
+    runtime = perf_counter() - start_time
 
     logger.info("runtime: {}  train_time: {}  training_seq_per_sec: {}".format(
             runtime, train_time,
