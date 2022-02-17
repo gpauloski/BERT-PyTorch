@@ -1,0 +1,52 @@
+{
+    "input_dir": "/lus/theta-fs0/projects/SuperBERT/jgpaul/datasets/encoded/wikibooks/static_masked_30K/sequences_lowercase_max_seq_len_128_next_seq_task_true/",
+    "output_dir": "results/deepspeed_bert_pretraining",
+    "seed": 42,
+    "log_prefix": "deepspeed_pretraining_phase1_log",
+    "disable_progress_bar": true,
+    "checkpoint_steps": 200,
+    "log_steps": 1,
+    "steps": 900,
+    "max_steps": 7038,
+    "scheduler_offset_steps": 0,
+    "lr": 11e-3,
+    "decay_rate": 0.90,
+    "decay_steps": 250,
+    "warmup_proportion": 0.06,
+    "dataset": {
+        "masked_token_fraction": 0.2,
+        "max_predictions_per_seq": 20
+    },
+    "deepspeed": {
+        "train_batch_size": 65536,
+        "train_micro_batch_size_per_gpu": 128,
+        "transformer_kernel": true,
+        "optimizer": {
+            "type": "Lamb",
+            "params": {
+                "lr": 11e-3,
+                "weight_decay": 0.01,
+                "bias_correction": false,
+                "max_coeff": 0.3,
+                "min_coeff": 0.01
+            }
+        },
+        "prescale_gradients": false,
+        "fp16": {
+            "enabled": true,
+            "loss_scale": 0
+        },
+        "gradient_clipping": 1.0,
+        "steps_per_print": 1024,
+        "sparse_attention": {
+            "mode": "fixed",
+            "block": 16,
+            "different_layout_per_head": true,
+            "num_local_blocks": 4,
+            "num_global_blocks": 1,
+            "attention": "bidirectional",
+            "horizontal_global_attention": false,
+            "num_different_global_patterns": 4
+        }
+    }
+}
