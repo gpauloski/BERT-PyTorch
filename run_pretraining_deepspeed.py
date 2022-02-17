@@ -1,6 +1,7 @@
 """BERT pretraining runner with DeepSpeed"""
 
 import argparse
+import functools
 import json
 import loggerplus as logger
 import math
@@ -12,14 +13,17 @@ import torch
 from time import perf_counter
 
 from torch.utils.data import DataLoader
+from torch import profiler
 from tqdm import tqdm
 from pathlib import Path
 
 import deepspeed
+import kfac
+from apex.optimizers import FusedLAMB
 
-import src.deepspeed.modeling as modeling
+import src.modeling_deepspeed as modeling
 from src.dataset import ShardedPretrainingDataset, DistributedSampler
-from src.schedulers import warmup_exp_decay_exp
+from src.schedulers import PolyWarmUpScheduler, LinearWarmUpScheduler
 from src.tokenization import get_wordpiece_tokenizer, get_bpe_tokenizer
 from src.utils import is_main_process, get_world_size, get_rank
 
@@ -54,11 +58,14 @@ def parse_arguments():
 
     args = parser.parse_args()
 
+    if 'LOCAL_RANK' in os.environ:
+        args.local_rank = int(os.environ['LOCAL_RANK'])
+
     with open(args.config_file) as cfg:
         config = json.load(cfg)
 
     config['local_rank'] = args.local_rank
-    config['checkpoint_dir'] = os.path.join(config['output_dir'], 'saved_models')
+    config['checkpoint_dir'] = os.path.join(config['output_dir'], 'pretrain_ckpts')
 
     with open(args.model_config_file) as cfg:
         model_config = json.load(cfg)
@@ -128,7 +135,9 @@ def init_model(model_config):
 
 
 def load_checkpoint(model, ckpt_dir, ckpt_id=None):
-    load_path, state_dict = model.load_checkpoint(ckpt_dir, ckpt_id)
+    load_path, state_dict = model.load_checkpoint(
+        ckpt_dir, ckpt_id, load_optimizer_states=False
+    )
     if load_path is None:
         if ckpt_id is None:
             logger.info(f'Failed to load latest checkpoint from {ckpt_dir}. '
@@ -137,20 +146,25 @@ def load_checkpoint(model, ckpt_dir, ckpt_id=None):
             logger.info(f'Failed to load step {ckpt_id} checkpoint from '
                         f'{ckpt_dir}. Starting new training.')
         return 0, 0, None
-
+    
     epoch = state_dict['epoch']
     global_step = state_dict['global_step']
-    sampler_state_dict = state_dict['sampler']
-    logger.info(f'Loaded checkpoint {load_path}')
-    return epoch, global_step, sampler_state_dict
+    logger.info(f'Loaded model checkpoint {load_path}')
+    return epoch, global_step, state_dict
 
 
-def save_checkpoint(model, sampler, epoch, global_step, ckpt_dir):
+def save_checkpoint(
+    model, sampler, epoch, global_step, ckpt_dir, scheduler=None, preconditioner=None
+):
     state_dict = {
         'epoch': epoch,
         'global_step': global_step,
         'sampler': sampler.state_dict(),
     }
+    if preconditioner is not None:
+        state_dict['preconditioner'] = preconditioner.state_dict()
+    if scheduler is not None:
+        state_dict['scheduler'] = scheduler.state_dict()
     success = model.save_checkpoint(ckpt_dir, global_step, state_dict)
     if success:
         logger.info(f'Saved checkpoint for step {global_step} to {ckpt_dir}')
@@ -192,6 +206,9 @@ def prepare_dataset(config, model_config, model, sampler_state_dict=None):
     )
     sampler = DistributedSampler(dataset, get_world_size(), rank=get_rank())
 
+    # TODO(gpauloski): fix bug with loading state (maybe its the prefetch
+    # factor being two high so an index being prefetched is not in the
+    # current file?)
     if sampler_state_dict is not None:
         sampler.load_state_dict(sampler_state_dict)
 
@@ -201,8 +218,8 @@ def prepare_dataset(config, model_config, model, sampler_state_dict=None):
         batch_size=model.train_micro_batch_size_per_gpu(),
         num_workers=4,
         pin_memory=True,
-        prefetch_factor=4,
-        persistent_workers=True
+        #prefetch_factor=4,
+        #persistent_workers=True
     )
 
     if is_main_process():
@@ -213,35 +230,110 @@ def prepare_dataset(config, model_config, model, sampler_state_dict=None):
     return loader, sampler
 
 
-def update_lr(optimizer, optimizer_steps, config):
-    lr = config['lr']
-    lr *= warmup_exp_decay_exp(
-        optimizer_steps,
-        config['decay_rate'],
-        config['decay_steps'],
-        config['max_steps'],
-        config['warmup_proportion']
-    )
-    for param_group in optimizer.param_groups:
-        param_group['lr'] = lr
-    return lr
-
-
 def main(config, model_config):
     model, optimizer_grouped_parameters, criterion = init_model(model_config)
-    model, optimizer, _, _ = deepspeed.initialize(
-        config=config['deepspeed'],
-        model=model,
-        model_parameters=optimizer_grouped_parameters
+
+    # Ensure train_batch_size = micro_batch_size * accum_steps * world_size
+    ds_config = config['deepspeed']
+    if 'gradient_accumulation' not in ds_config:
+        ds_config['gradient_accumulation'] = int(math.ceil(
+            ds_config['train_batch_size'] / (
+            ds_config['train_micro_batch_size_per_gpu'] * get_world_size())
+        ))
+    effective_batch_size = (
+        ds_config['train_micro_batch_size_per_gpu'] *
+        ds_config['gradient_accumulation'] * get_world_size()
     )
-    epoch, global_step, sampler_state_dict = load_checkpoint(
+    if effective_batch_size != ds_config['train_batch_size']:
+        ds_config['train_batch_size'] = effective_batch_size
+
+    optimizer_ = FusedLAMB(
+        optimizer_grouped_parameters,
+        lr=config['lr']
+    )
+    model, optimizer, _, scheduler = deepspeed.initialize(
+        config=config['deepspeed'],
+        optimizer=optimizer_,
+        model=model,
+        model_parameters=optimizer_grouped_parameters,
+    )
+    
+    if config['lr_decay'] == 'poly':
+        Scheduler = PolyWarmUpScheduler
+    elif config['lr_decay'] == 'linear':
+        Scheduler = LinearWarmUpScheduler
+    else:
+        raise ValueError('Unknown lr decay "{}"'.format(config['lr_decay']))
+
+    schedulers = [Scheduler(
+        optimizer_,
+        warmup=config['warmup_proportion'],
+        total_steps=config['max_steps'] - config['scheduler_offset_steps']
+    )]
+
+    if 'allreduce_bucket_cap_mb' in config:
+        allreduce_bucket_cap_mb = config['allreduce_bucket_cap_mb']
+    else:
+        allreduce_bucket_cap_mb = 25
+
+    if 'kfac' in config and config['kfac']:
+        preconditioner = kfac.KFAC(
+            model,
+            factor_update_steps=config['kfac_factor_update_steps'],
+            inv_update_steps=config['kfac_inv_update_steps'],
+            lr=config['lr'],
+            damping=0.003,
+            factor_decay=0.95,
+            kl_clip=0.001,
+            accumulation_steps=model.gradient_accumulation_steps(),
+            allreduce_bucket_cap_mb=allreduce_bucket_cap_mb,
+            colocate_factors=True,
+            compute_eigenvalue_outer_product=True,
+            grad_worker_fraction=kfac.DistributedStrategy.COMM_OPT,
+            grad_scaler=None,
+            skip_layers=['BertLMPredictionHead', 'embedding'],
+            verbose=True
+        )
+        if is_main_process():
+            logger.info(preconditioner)
+        schedulers.append(PolyWarmUpScheduler(
+            preconditioner,
+            warmup=config['warmup_proportion'],
+            total_steps=config['max_steps'] - config['scheduler_offset_steps']
+        ))
+    else:
+        preconditioner = None
+    epoch, global_step, state_dict = load_checkpoint(
         model, config['checkpoint_dir']
     )
+
+    if (
+        state_dict is not None and 'optimizer' in state_dict and 
+        # Do not restore optimizer state if new phase
+        global_step > config['scheduler_offset_steps']
+    ):
+        model.optimizer.load_state_dict(state_dict['optimizer'])
+
+    if (
+        state_dict is not None and 'scheduler' in state_dict and
+        # Skip loading scheduler state dict if starting new phase
+        global_step != config['scheduler_offset_steps']
+    ):
+        for scheduler in schedulers:
+            scheduler.load_state_dict(state_dict['scheduler'])
+
+    if (
+        preconditioner is not None and 
+        state_dict is not None and
+        'preconditioner' in state_dict
+    ):
+        preconditioner.load_state_dict(state_dict['preconditioner'])
+
     dataloader, sampler = prepare_dataset(
         config,
         model_config,
         model,
-        sampler_state_dict=sampler_state_dict
+        sampler_state_dict=None if state_dict is None else state_dict['sampler']
     )
  
     if not config['disable_progress_bar']:
@@ -249,11 +341,27 @@ def main(config, model_config):
     else:
         train_iter = dataloader
 
+    profile = 'profile' in config and config['profile']
+    if profile:
+        logger.info('Enabling profiling')
+        prof = profiler.profile(
+            schedule=profiler.schedule(
+                wait=0, warmup=2, active=3, repeat=0, skip_first=2,
+            ),
+            on_trace_ready=profiler.tensorboard_trace_handler(
+                os.path.join(config['output_dir'], 'tensorboard')
+            ),
+        )
+
     model.train()
     start_time = perf_counter()
     step = 0
     avg_loss = 0
+    samples = 0
+    train_perf_time = perf_counter()
 
+    if profile:
+        prof.start()
     while True:
         for batch in train_iter:
             # Forward/Backward
@@ -269,26 +377,30 @@ def main(config, model_config):
             unscaled_loss = loss.item()
             avg_loss += unscaled_loss
             model.backward(loss)
+            samples += get_world_size() * model.train_micro_batch_size_per_gpu()
 
             # Optimization step/logging/scheduler update
             if model.is_gradient_accumulation_boundary():
-                if model.fp16_enabled():
-                    lr = update_lr(
-                        optimizer,
-                        global_step - config['scheduler_offset_steps'],
-                        config
-                    )
+                for scheduler in schedulers:
+                    scheduler.step()
+                if preconditioner is not None:
+                    preconditioner.step()
                 model.step()
 
                 avg_loss = avg_loss / model.gradient_accumulation_steps()
+                global_step += 1
+                step += 1
+
                 if global_step % config['log_steps'] == 0:
                     logger.log(
                         tag='train',
-                        step=global_step,
+                        step=global_step,  
                         epoch=epoch,
                         average_loss=avg_loss,
                         step_loss=unscaled_loss,
-                        learning_rate=lr
+                        learning_rate=optimizer.param_groups[0]['lr'],
+                        samples_per_second=
+                            samples / (perf_counter() - train_perf_time)
                     )
 
                 if (
@@ -296,22 +408,29 @@ def main(config, model_config):
                     global_step == config['max_steps'] or 
                     step == config['steps']
                 ):
-                    save_checkpoint(model, sampler, epoch, global_step,
-                                    config['checkpoint_dir'])
+                    save_checkpoint(
+                        model, sampler, epoch, global_step,
+                        config['checkpoint_dir'], schedulers[0], preconditioner
+                    )
 
-                avg_loss = 0
-                global_step += 1
-                step += 1
-                
                 if (
                     global_step >= config['max_steps'] or 
                     step >= config['steps']
                 ):
+                    if profile:
+                        prof.stop()
                     return global_step, perf_counter() - start_time
+
+                avg_loss = 0
+                if profile:
+                    prof.step()
             else:
                 model.step()
 
         epoch += 1
+
+    if profile:
+        prof.stop()
 
 
 if __name__ == "__main__":
@@ -327,7 +446,7 @@ if __name__ == "__main__":
         config['checkpoint_dir'],
         config['log_prefix']
     )
-    
+   
     logger.info('TRAINING CONFIG:\n{}'.format(
                 json.dumps(config, indent=2, sort_keys=True)))
     logger.info('MODEL CONFIG:\n{}'.format(

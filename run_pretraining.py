@@ -30,8 +30,8 @@ import torch
 try:
     import kfac
     HAS_KFAC = True
-except ImportError:
-    HAS_KFAC = False
+except ImportError as e:
+    HAS_KFAC = e
 
 from time import perf_counter
 from tqdm import tqdm
@@ -171,8 +171,8 @@ def parse_arguments():
             if key in vars(args) and key not in vars(cli_args):
                 setattr(args, key, configs[key])
 
-    if args.kfac and not HAS_KFAC:
-        raise ValueError('KFAC is enabled but cannot import kfac')
+    if args.kfac and isinstance(HAS_KFAC, ImportError):
+        raise ValueError(f'KFAC is enabled but cannot import kfac: {HAS_KFAC}')
 
     return args
 
@@ -321,27 +321,18 @@ def prepare_optimizers(args, model, checkpoint, global_steps):
     if args.kfac:
         preconditioner = kfac.KFAC(
             model,
+            factor_update_steps=args.kfac_factor_interval,
+            inv_update_steps=args.kfac_inv_interval,
             lr=args.learning_rate, 
-            factor_decay=args.kfac_stat_decay,
             damping=args.kfac_damping, 
+            factor_decay=args.kfac_stat_decay,
             kl_clip=args.kfac_kl_clip,
-            factor_update_freq=args.kfac_factor_interval,
-            inv_update_freq=args.kfac_inv_interval,
-            # Skip TrainingHeads which contains the decoder, a Linear module
-            # with shape (seq_len, vocab_size), such that it is too large to invert
+            accumulation_steps=args.accumulation_steps,
+            allreduce_bucket_cap_mb=0,
+            colocate_factors=True,
+            grad_worker_fraction=kfac.DistributedStrategy.MEM_OPT,
+            grad_scaler=None,
             skip_layers=args.kfac_skip_layers,
-            # BERT calls KFAC very infrequently so no need to optimize for
-            # communication. Optimize for memory instead.
-            comm_method=kfac.CommMethod.HYBRID_OPT,
-            grad_worker_fraction=0.5,
-            inv_dtype=torch.float16,
-            # Compute the factors and update the running averages during the
-            # forward backward pass b/c we are using grad accumulation but
-            # not accumulating the input/output data
-            accumulate_data=False,
-            compute_factor_in_hook=True,
-            distribute_layer_factors=False,
-            grad_scaler=scaler,
         )
 
         lrs = Scheduler(preconditioner, warmup=args.warmup_proportion, 
@@ -477,6 +468,7 @@ def main(args):
     optimization_steps = 0
     samples = 0
     train_time_start = perf_counter()
+    train_perf_time = perf_counter()
 
     if checkpoint is not None and 'epoch' in checkpoint:
         epoch = checkpoint['epoch']
@@ -491,8 +483,6 @@ def main(args):
     while True:
         datasampler.set_epoch(epoch)
         for batch in train_iter:
-            if step == 1:  # start perf timer on second step to skip initialize
-                train_perf_time = perf_counter()
             if (
                 global_step >= args.max_steps
                 or optimization_steps >= args.steps
@@ -540,8 +530,7 @@ def main(args):
             loss = forward_backward_pass(model, criterion, scaler, batch,
                     args.accumulation_steps, sync_grads=sync_grads)
             average_loss += loss.item()
-            if step > 0:  # skip first step due to initialization
-                samples += get_world_size() * args.local_batch_size
+            samples += get_world_size() * args.local_batch_size
             step += 1
 
             if sync_grads:
@@ -560,7 +549,6 @@ def main(args):
                     learning_rate=optimizer.param_groups[0]['lr'],
                     samples_per_second=
                         samples / (perf_counter() - train_perf_time)
-                        if samples > 0 else 0
                 )
                 average_loss = 0
 
