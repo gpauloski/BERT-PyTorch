@@ -1,5 +1,9 @@
 # BERT For PyTorch
 
+**Archival Update (15 March 2023)**
+
+*This repository as been **archived** and will no longer be maintained. While you can still use this repository, I suggest checking out my new training repository [llm-pytorch](https://github.com/gpauloski/llm-pytorch) which is actively maintained and provides the same features provided here (and new ones!).*
+
 This repository provides scripts for pretraining and finetuning BERT in PyTorch.
 
  
